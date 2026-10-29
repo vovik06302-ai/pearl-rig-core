@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+rig-local.json
+.runtime/
+work/
+
+bundle/
+Output/
+pearl-icon.ico

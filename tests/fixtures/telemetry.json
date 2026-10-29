@@ -1,0 +1,13 @@
+{
+  "name": "OneZeroMiner", "version": "1.8.3", "last_update": 1793028425, "uptime_seconds": 2114,
+  "devices": [
+    {"id":0,"bus_id":1,"name":"4070 Ti","cclk":2325,"mclk":810,"temp":74,"mem_temp":null,"fan":65,"power":149.20801},
+    {"id":1,"bus_id":5,"name":"4070 Ti","cclk":2295,"mclk":810,"temp":66,"mem_temp":null,"fan":68,"power":149.95499}
+  ],
+  "algos": [{
+    "name":"pearlhash", "pool":"stratum+tcp://prl-ru.kryptex.network:7048", "pool_status":"Connected",
+    "hashrates":[135719651443886,140042490788914],"total_hashrate":275762142232800,
+    "total_accepted_shares":57,"total_rejected_shares":1,"total_invalid_shares":0,
+    "devices_accepted_shares":[29,28],"devices_rejected_shares":[1,0]
+  }]
+}

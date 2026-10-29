@@ -1,0 +1,20 @@
+name: Native Build
+on:
+  push:
+    tags:
+      - 'v-final*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Installer
+        run: |
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer.iss
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: Output\PearlRigCore-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,6 @@
+{
+  "name": "Pearl Rig Control & Watchdog Agent",
+  "description": "Панель локального мониторинга и управления майнингом Pearl (PRL) для ПК с двумя RTX 4070 Ti (OneZeroMiner API и nvidia-smi).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

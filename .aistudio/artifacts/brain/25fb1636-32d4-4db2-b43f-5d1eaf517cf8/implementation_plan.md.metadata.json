@@ -1,0 +1,6 @@
+{
+  "summary":  "План реализации центра полного контроля и управления майнингом Pearl (PRL) для рига Dual RTX 4070 Ti: веб-консоль мониторинга и управления, генератор автономного Windows Watchdog-агента с авто-обходом VPN (INCY TUN), защитой GPU и интеграцией с Telegram-ботом.",
+  "updatedAt":  "2026-10-25T18:11:06.020543371Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
