@@ -74,11 +74,23 @@ jobs:
       - name: Compile Windows installer
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @('installer.iss', 'pearl_watchdog_agent.bat', 'pearl-icon.ico', 'miner/onezerominer.exe')
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required installer input is missing: $path" }
+          }
+
           $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          if (-not (Test-Path $iscc)) { choco install innosetup -y }
-          & $iscc 'installer.iss'
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Chocolatey failed to install Inno Setup (exit code $LASTEXITCODE)" }
+          }
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "Inno Setup compiler was not found at $iscc after installation" }
+
+          New-Item -ItemType Directory -Path 'Output' -Force | Out-Null
+          & $iscc '/Qp' (Join-Path $env:GITHUB_WORKSPACE 'installer.iss')
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
-          if (-not (Test-Path 'Output/PearlRigControl-Setup.exe')) { throw 'Installer EXE was not created' }
+          if (-not (Test-Path -LiteralPath 'Output/PearlRigControl-Setup.exe' -PathType Leaf)) { throw 'Installer EXE was not created at Output/PearlRigControl-Setup.exe' }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
