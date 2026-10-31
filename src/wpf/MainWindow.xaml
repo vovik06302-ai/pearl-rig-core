@@ -85,7 +85,7 @@
                 </Border>
                 <StackPanel Width="205" VerticalAlignment="Center">
                     <Button Content="{Binding UpdateButtonText}" Command="{Binding UpdateCommand}" Style="{StaticResource UpdateButtonStyle}" ToolTip="Проверить GitHub Releases и загрузить новую версию" />
-                    <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding UpdateProgress}" Background="#263243" Foreground="{StaticResource AccentBrush}" Margin="3,3,3,0">
+                    <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding UpdateProgress, Mode=OneWay}" Background="#263243" Foreground="{StaticResource AccentBrush}" Margin="3,3,3,0">
                         <ProgressBar.Style>
                             <Style TargetType="ProgressBar">
                                 <Setter Property="Visibility" Value="Collapsed" />
