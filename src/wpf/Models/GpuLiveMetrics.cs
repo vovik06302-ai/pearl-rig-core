@@ -26,6 +26,8 @@ public sealed record GpuLiveMetrics
     public string MemoryClockText => MclkMHz is double value ? $"{value:0} MHz" : "— MHz";
     public string SharesText => AcceptedShares is long accepted ? accepted.ToString("N0") : "—";
     public bool HasHashrate => HashrateTHs is double value && double.IsFinite(value) && value >= 0;
+    public bool HasTemperature => TempC is double value && double.IsFinite(value) && value >= 0;
+    public bool IsOverheated => TempC is double value && double.IsFinite(value) && value >= 80;
     public string SourceText => Source switch
     {
         "nvidia-smi" => "Датчики NVIDIA",
