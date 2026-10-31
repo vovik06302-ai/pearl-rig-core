@@ -1,0 +1,235 @@
+<Window x:Class="PearlRigCore.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
+        Title="Pearl Rig Control" Height="880" Width="1220" MinHeight="700" MinWidth="980"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource WindowBackground}"
+        Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI" Loaded="Window_Loaded" Closed="Window_Closed">
+    <Window.Resources>
+        <Style x:Key="MetricCaption" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style x:Key="MetricValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="FontSize" Value="21" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,7,0,0" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+        <Style x:Key="GpuMetricLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style x:Key="GpuMetricValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,5,0,0" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="30">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,24">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Border Width="42" Height="42" CornerRadius="13" Background="#102D2A" BorderBrush="#20534B" BorderThickness="1" Margin="0,0,14,0">
+                    <TextBlock Text="P" Foreground="{StaticResource AccentBrush}" FontSize="23" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="PEARL RIG CONTROL" FontSize="19" FontWeight="Bold" />
+                    <TextBlock Text="ПАНЕЛЬ МОНИТОРИНГА · ЛОКАЛЬНЫЕ ПОКАЗАНИЯ" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,3,0,0" />
+                </StackPanel>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="ЗАПУСТИТЬ" Command="{Binding StartMinerCommand}" Padding="12,9" FontSize="11" Margin="0,0,7,0" ToolTip="Запустить OneZeroMiner; Windows запросит разрешение для управления GPU" />
+                <Button Content="ОСТАНОВИТЬ" Command="{Binding StopMinerCommand}" Padding="12,9" FontSize="11" Margin="0,0,7,0" Background="#6F3038" Foreground="#FFF1F2" ToolTip="Остановить майнер штатным Ctrl+C" />
+                <Button Content="{Binding MinerModeLabel}" Command="{Binding ToggleMinerModeCommand}" Padding="12,9" FontSize="11" Margin="0,0,10,0" Background="#273346" Foreground="{StaticResource TextBrush}" ToolTip="Переключить ручной режим и запуск майнера при входе в Windows" />
+                <Border CornerRadius="9" Background="#111A23" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" Padding="12,9" Margin="0,0,12,0">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="7" Height="7" Fill="{StaticResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBlock Text="{Binding ConnectionStatus}" FontSize="12" Foreground="#C9D4E0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+                <Button Content="ОБНОВИТЬ" Command="{Binding RefreshCommand}" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="0,0,0,15">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <TextBlock Text="Показатели фермы" FontSize="24" FontWeight="Bold" />
+            <TextBlock Grid.Column="1" Text="{Binding MinerControlStatus}" Foreground="{StaticResource MutedBrush}" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" Margin="16,0,0,0" />
+        </Grid>
+
+        <UniformGrid Grid.Row="2" Columns="4" Margin="-6,0,-6,18">
+            <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="13" Padding="16" Margin="6">
+                <StackPanel><TextBlock Text="ОБЩИЙ ХЕШРЕЙТ" Style="{StaticResource MetricCaption}" /><TextBlock Text="{Binding TotalHashrate}" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" /></StackPanel>
+            </Border>
+            <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="13" Padding="16" Margin="6">
+                <StackPanel><TextBlock Text="ПРИНЯТО ШАР" Style="{StaticResource MetricCaption}" /><TextBlock Text="{Binding AcceptedShares}" Style="{StaticResource MetricValue}" /></StackPanel>
+            </Border>
+            <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="13" Padding="16" Margin="6">
+                <StackPanel><TextBlock Text="ОТКЛОНЕНО ШАР" Style="{StaticResource MetricCaption}" /><TextBlock Text="{Binding RejectedShares}" Style="{StaticResource MetricValue}" /></StackPanel>
+            </Border>
+            <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="13" Padding="16" Margin="6">
+                <StackPanel><TextBlock Text="ПУЛ" Style="{StaticResource MetricCaption}" /><TextBlock Text="{Binding PoolStatus}" Style="{StaticResource MetricValue}" FontSize="18" /><TextBlock Text="{Binding PoolUrl}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,5,0,0" TextTrimming="CharacterEllipsis" /></StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <Border Grid.Row="3" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,14">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="330" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,18,0">
+                    <TextBlock Text="БАЛАНС KRYPTEX" Style="{StaticResource MetricCaption}" />
+                    <TextBox Text="{Binding WalletAddressDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,9,0,7" Padding="10,8" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" FontFamily="Consolas" FontSize="11" ToolTip="Публичный адрес PRL, хранится локально на этом компьютере" />
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <Button Content="СОХРАНИТЬ АДРЕС" Command="{Binding SaveWalletCommand}" Padding="12,7" FontSize="11" />
+                        <TextBlock Grid.Column="1" Text="{Binding WalletStatus}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    </Grid>
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="ФАКТИЧЕСКИЕ НАЧИСЛЕНИЯ · PRL" Style="{StaticResource MetricCaption}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding PoolUpdated}" Foreground="{StaticResource MutedBrush}" FontSize="10" VerticalAlignment="Center" />
+                    </Grid>
+                    <UniformGrid Columns="5">
+                        <StackPanel Margin="0,0,5,0"><TextBlock Text="ВСЕГО" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PoolBalance}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                        <StackPanel Margin="0,0,5,0"><TextBlock Text="ПОДТВЕРЖДЕНО" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PoolConfirmed}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                        <StackPanel Margin="0,0,5,0"><TextBlock Text="ОЖИДАЕТСЯ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PoolUnconfirmed}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                        <StackPanel Margin="0,0,5,0"><TextBlock Text="ВЫПЛАЧЕНО" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PoolPaid}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                        <StackPanel><TextBlock Text="ЭКВИВАЛЕНТ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PoolRubEstimate}" Style="{StaticResource GpuMetricValue}" Foreground="{StaticResource AccentBrush}" /></StackPanel>
+                    </UniformGrid>
+                    <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding PoolBalanceStatus}" Foreground="{StaticResource MutedBrush}" FontSize="10" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1" Text="{Binding MarketRate}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="12,0,0,0" />
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="4" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="14" Padding="15" Margin="0,0,0,10" Opacity="0">
+            <Border.RenderTransform><TranslateTransform Y="8" /></Border.RenderTransform>
+            <Border.Triggers>
+                <EventTrigger RoutedEvent="Loaded">
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.32" />
+                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" From="8" To="0" Duration="0:0:0.32" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </EventTrigger>
+            </Border.Triggers>
+            <StackPanel>
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <TextBlock Text="НАСТРОЙКИ МАЙНЕРА" Style="{StaticResource MetricCaption}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="Для каждого ПК настройки сохраняются отдельно" Foreground="{StaticResource MutedBrush}" FontSize="10" />
+                </Grid>
+                <UniformGrid Columns="7">
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ИМЯ РАБОТНИКА" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding WorkerNameDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Имя этой фермы в статистике пула, например pc1" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ЯДРО, MHz" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding CoreClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ПАМЯТЬ, MHz" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding MemoryClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ЛИМИТ, W" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding PowerLimitDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="KERNEL" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding KernelDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ВЕНТИЛЯТОР, %" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding FanDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <Button Content="СОХРАНИТЬ" Command="{Binding SaveMinerSettingsCommand}" Padding="8,8" FontSize="11" VerticalAlignment="Bottom" ToolTip="Сохранить настройки локально; они применятся при следующем запуске майнера" />
+                </UniformGrid>
+                <TextBlock Text="В каждом поле параметры разделяются запятой по номеру GPU, например 2400,2400. Вентилятор допускает * для автоматического режима. Настройки применяются при следующем запуске майнера." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,8,0,0" TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="5">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Gpus}">
+                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><primitives:UniformGrid Columns="2" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="16" Padding="20" Margin="6">
+                                <Border.RenderTransform><TranslateTransform Y="10" /></Border.RenderTransform>
+                                <Border.Triggers>
+                                    <EventTrigger RoutedEvent="Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.35" />
+                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" From="10" To="0" Duration="0:0:0.35" />
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </Border.Triggers>
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,16">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding SourceText}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                        <Border Grid.Column="1" Background="#102D2A" CornerRadius="8" Padding="10,6" VerticalAlignment="Center">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="GPU #" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" />
+                                                <TextBlock Text="{Binding Id}" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                    <Border Background="#0D141D" BorderBrush="#1C2937" BorderThickness="1" CornerRadius="12" Padding="15" Margin="0,0,0,15">
+                                        <StackPanel>
+                                            <TextBlock Text="ХЕШРЕЙТ" Style="{StaticResource MetricCaption}" />
+                                            <TextBlock Text="{Binding HashrateText}" Foreground="{StaticResource AccentBrush}" FontSize="28" FontWeight="Bold" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                    <UniformGrid Columns="3" Rows="2">
+                                        <StackPanel Margin="0,4,4,12"><TextBlock Text="ТЕМПЕРАТУРА" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding TemperatureText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel Margin="0,4,4,12"><TextBlock Text="ПАМЯТЬ GPU" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding VramTemperatureText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel Margin="0,4,0,12"><TextBlock Text="МОЩНОСТЬ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PowerText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel Margin="0,4,4,0"><TextBlock Text="ВЕНТИЛЯТОР" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding FanText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel Margin="0,4,4,0"><TextBlock Text="ЧАСТОТА ЯДРА" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding CoreClockText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel Margin="0,4,0,0"><TextBlock Text="ЧАСТОТА ПАМЯТИ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding MemoryClockText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                    </UniformGrid>
+                                    <Border Height="1" Background="{StaticResource BorderBrushSoft}" Margin="0,15,0,10" />
+                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <TextBlock Text="Принято шар" Foreground="{StaticResource MutedBrush}" FontSize="11" />
+                                        <TextBlock Grid.Column="1" Text="{Binding SharesText}" HorizontalAlignment="Right" FontSize="12" FontWeight="SemiBold" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+            <Border Background="#111923" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="14" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="520">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers><DataTrigger Binding="{Binding HasNoGpus}" Value="True"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="Нет данных о видеокартах" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                    <TextBlock Text="Подключите GPU или проверьте драйвер NVIDIA и локальный API майнера." Foreground="{StaticResource MutedBrush}" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="6" Background="#0E151E" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="10" Padding="12,9" Margin="6,10,6,0">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding DetailStatus}" Foreground="{StaticResource MutedBrush}" FontSize="11" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding LastUpdated}" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="16,0,0,0" VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
