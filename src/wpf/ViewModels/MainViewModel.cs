@@ -19,6 +19,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private DateTimeOffset _lastEarningsRead = DateTimeOffset.MinValue;
     private string _walletAddress;
     private bool _isRefreshing;
+    private bool _manualRefreshQueued;
     private bool _disposed;
     private string _connectionStatus = "Подключение к источникам…";
     private string _minerApiStatus = "Ожидание данных";
@@ -67,7 +68,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _walletAddressDraft = config.WalletAddress;
         _walletStatus = PoolEarningsClient.IsValidWallet(config.WalletAddress) ? "Адрес выплат загружен из локального профиля" : "Введите публичный адрес PRL";
         SaveWalletCommand = new RelayCommand(() => _ = SaveWalletAsync(), () => PoolEarningsClient.IsValidWallet(WalletAddressDraft));
-        RefreshCommand = new RelayCommand(() => _ = RefreshAsync(), () => !_isRefreshing);
+        RefreshCommand = new RelayCommand(() => _ = RefreshAsync(force: true));
         StartMinerCommand = new RelayCommand(() => _ = StartMinerAsync(), () => !_isMinerBusy && !_minerControl.IsRunning);
         StopMinerCommand = new RelayCommand(() => _ = StopMinerAsync(), () => !_isMinerBusy && _minerControl.IsRunning);
         ToggleMinerModeCommand = new RelayCommand(() => _ = ToggleMinerModeAsync(), () => !_isMinerBusy);
@@ -105,7 +106,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string PoolRubEstimate { get => _poolRubEstimate; private set => Set(ref _poolRubEstimate, value); }
     public string MarketRate { get => _marketRate; private set => Set(ref _marketRate, value); }
     public string PoolUpdated { get => _poolUpdated; private set => Set(ref _poolUpdated, value); }
-    public bool IsRefreshing { get => _isRefreshing; private set { if (Set(ref _isRefreshing, value)) RefreshCommand.NotifyCanExecuteChanged(); } }
+    public bool IsRefreshing { get => _isRefreshing; private set => Set(ref _isRefreshing, value); }
     public bool IsMinerRunning => _minerControl.IsRunning;
     public string MinerControlStatus { get => _minerControlStatus; private set => Set(ref _minerControlStatus, value); }
     public bool AutoStartMining { get => _autoStartMining; private set { if (Set(ref _autoStartMining, value)) OnPropertyChanged(nameof(MinerModeLabel)); } }
@@ -142,7 +143,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
             await _minerControl.StartAsync(wallet, _lifetime?.Token ?? CancellationToken.None);
             MinerControlStatus = "Майнер запущен";
-            _ = RefreshAsync();
+            _ = RefreshAsync(force: true);
         }
         catch (OperationCanceledException) { MinerControlStatus = "Запуск отменён"; }
         catch (Exception ex) { MinerControlStatus = $"Не запущен: {ex.Message}"; }
@@ -157,7 +158,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await _minerControl.StopAsync(_lifetime?.Token ?? CancellationToken.None);
             MinerControlStatus = "Майнер остановлен штатно";
-            _ = RefreshAsync();
+            _ = RefreshAsync(force: true);
         }
         catch (OperationCanceledException) { MinerControlStatus = "Остановка отменена"; }
         catch (Exception ex) { MinerControlStatus = $"Остановка не подтверждена: {ex.Message}"; }
@@ -253,9 +254,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         SaveMinerSettingsCommand.NotifyCanExecuteChanged();
     }
 
-    private async Task RefreshAsync()
+    private async Task RefreshAsync(bool force = false)
     {
-        if (IsRefreshing || _disposed) return;
+        if (_disposed) return;
+        if (IsRefreshing)
+        {
+            if (force) _manualRefreshQueued = true;
+            return;
+        }
         IsRefreshing = true;
         try
         {
@@ -286,7 +292,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             DetailStatus = $"Не удалось обновить телеметрию: {ex.Message}";
             LastUpdated = "Последний опрос завершился ошибкой";
         }
-        finally { IsRefreshing = false; }
+        finally
+        {
+            IsRefreshing = false;
+            if (_manualRefreshQueued && !_disposed)
+            {
+                _manualRefreshQueued = false;
+                await RefreshAsync();
+            }
+        }
     }
 
     private void Apply(TelemetrySnapshot snapshot)
@@ -354,7 +368,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _walletAddress = wallet;
             _lastEarningsRead = DateTimeOffset.MinValue;
             WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
-            await RefreshAsync();
+            await RefreshAsync(force: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
