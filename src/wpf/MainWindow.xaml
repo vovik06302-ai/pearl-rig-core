@@ -64,7 +64,7 @@
                         <TextBlock Text="{Binding ConnectionStatus}" FontSize="12" Foreground="#C9D4E0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Border>
-                <Button Content="ОБНОВИТЬ" Command="{Binding RefreshCommand}" />
+                <Button Content="ОБНОВИТЬ ДАННЫЕ" Command="{Binding RefreshCommand}" ToolTip="Немедленно запросить свежие показатели GPU, майнера и пула" />
             </StackPanel>
         </Grid>
 
