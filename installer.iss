@@ -1,5 +1,5 @@
 #define AppName "Pearl Rig Control"
-#define AppVersion "3.4.1"
+#define AppVersion "3.4.2"
 #define AppPublisher "Pearl Rig Control"
 #define AppExeName "PearlRigControl.exe"
 
