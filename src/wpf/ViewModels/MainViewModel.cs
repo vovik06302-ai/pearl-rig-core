@@ -12,6 +12,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly TelemetryService _telemetry;
     private readonly PoolEarningsClient _earningsClient;
     private readonly MinerControlService _minerControl;
+    private readonly UpdateService _updateService;
     private RigConfig _config;
     private readonly int _earningsRefreshSeconds = 60;
     private readonly DispatcherTimer _timer;
@@ -42,6 +43,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _marketRate = "Курс PRL/RUB недоступен";
     private string _poolUpdated = "Нет данных";
     private bool _isMinerBusy;
+    private bool _gpuDiscoveryCompleted;
     private bool _autoStartMining;
     private string _minerControlStatus = "Проверка майнера…";
     private string _workerNameDraft;
@@ -50,20 +52,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _powerLimitDraft;
     private string _kernelDraft;
     private string _fanDraft;
+    private ReleaseUpdate? _availableUpdate;
+    private Version _installedVersion;
+    private bool _isCheckingUpdate;
+    private bool _isDownloadingUpdate;
+    private double _updateProgress;
+    private string _updateStatusText = "Проверка версии…";
 
-    public MainViewModel(TelemetryService telemetry, PoolEarningsClient earningsClient, MinerControlService minerControl, RigConfig config)
+    public MainViewModel(TelemetryService telemetry, PoolEarningsClient earningsClient, MinerControlService minerControl, UpdateService updateService, RigConfig config)
     {
         _telemetry = telemetry;
         _earningsClient = earningsClient;
         _minerControl = minerControl;
+        _updateService = updateService;
         _config = config;
+        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 4, 1);
         _autoStartMining = config.AutoStartMining;
         _workerNameDraft = config.WorkerName;
-        _coreClockDraft = config.CoreClock;
-        _memoryClockDraft = config.MemoryClock;
-        _powerLimitDraft = config.PowerLimit;
-        _kernelDraft = config.Kernel;
-        _fanDraft = config.Fan;
+        _coreClockDraft = SettingDraft(config.CoreClock);
+        _memoryClockDraft = SettingDraft(config.MemoryClock);
+        _powerLimitDraft = SettingDraft(config.PowerLimit);
+        _kernelDraft = SettingDraft(config.Kernel);
+        _fanDraft = SettingDraft(config.Fan);
         _walletAddress = config.WalletAddress;
         _walletAddressDraft = config.WalletAddress;
         _walletStatus = PoolEarningsClient.IsValidWallet(config.WalletAddress) ? "Адрес выплат загружен из локального профиля" : "Введите публичный адрес PRL";
@@ -73,6 +83,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         StopMinerCommand = new RelayCommand(() => _ = StopMinerAsync(), () => !_isMinerBusy && _minerControl.IsRunning);
         ToggleMinerModeCommand = new RelayCommand(() => _ = ToggleMinerModeAsync(), () => !_isMinerBusy);
         SaveMinerSettingsCommand = new RelayCommand(() => _ = SaveMinerSettingsAsync(), CanSaveMinerSettings);
+        UpdateCommand = new RelayCommand(() => _ = UpdateOrCheckAsync(), () => !_isCheckingUpdate && !_isDownloadingUpdate);
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _timer.Tick += async (_, _) => await RefreshAsync();
     }
@@ -85,6 +96,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public RelayCommand StopMinerCommand { get; }
     public RelayCommand ToggleMinerModeCommand { get; }
     public RelayCommand SaveMinerSettingsCommand { get; }
+    public RelayCommand UpdateCommand { get; }
+    public event Action<string>? InstallerDownloaded;
+    public void SetUpdateStatus(string message) => UpdateStatusText = message;
 
     public string ConnectionStatus { get => _connectionStatus; private set => Set(ref _connectionStatus, value); }
     public string MinerApiStatus { get => _minerApiStatus; private set => Set(ref _minerApiStatus, value); }
@@ -118,6 +132,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string KernelDraft { get => _kernelDraft; set { if (Set(ref _kernelDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string FanDraft { get => _fanDraft; set { if (Set(ref _fanDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public bool HasNoGpus => Gpus.Count == 0;
+    public string GpuCountLabel => !_gpuDiscoveryCompleted ? "Поиск видеокарт…" : Gpus.Count == 0 ? "GPU не обнаружены" : $"Обнаружено GPU: {Gpus.Count}";
+    public double MaxGpuHashrateTHs => Math.Max(1, Gpus.Where(gpu => gpu.HashrateTHs is not null).Select(gpu => gpu.HashrateTHs!.Value).DefaultIfEmpty(1).Max() * 1.25);
+    public string ComputerSummary { get; } = ComputerInfoClient.GetSummary();
+    public string InstalledVersionText => $"УСТАНОВЛЕНА v{_installedVersion.ToString(3)}";
+    public bool UpdateAvailable => _availableUpdate is not null;
+    public bool IsDownloadingUpdate => _isDownloadingUpdate;
+    public double UpdateProgress => _updateProgress;
+    public string UpdateStatusText { get => _updateStatusText; private set => Set(ref _updateStatusText, value); }
+    public string UpdateButtonText => _isDownloadingUpdate
+        ? $"v{_installedVersion.ToString(3)} · {UpdateProgress:0}%"
+        : _availableUpdate is not null ? $"v{_installedVersion.ToString(3)} · ОБНОВИТЬ" : $"v{_installedVersion.ToString(3)} · ПРОВЕРИТЬ";
 
     public void Start()
     {
@@ -125,6 +150,83 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _timer.Start();
         UpdateMinerState();
         _ = RefreshAsync();
+        _ = CheckForUpdatesAsync();
+    }
+
+    private async Task UpdateOrCheckAsync()
+    {
+        if (_availableUpdate is null)
+        {
+            await CheckForUpdatesAsync();
+            return;
+        }
+        await DownloadUpdateAsync(_availableUpdate);
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_isCheckingUpdate || _isDownloadingUpdate || _disposed) return;
+        _isCheckingUpdate = true;
+        UpdateStatusText = "Проверяю GitHub Releases…";
+        OnPropertyChanged(nameof(UpdateButtonText));
+        UpdateCommand.NotifyCanExecuteChanged();
+        try
+        {
+            _availableUpdate = await _updateService.CheckAsync(_installedVersion, _lifetime?.Token ?? CancellationToken.None);
+            OnPropertyChanged(nameof(UpdateAvailable));
+            OnPropertyChanged(nameof(UpdateButtonText));
+            UpdateStatusText = _availableUpdate is null
+                ? $"Установлена v{_installedVersion.ToString(3)} · новых релизов нет"
+                : $"Доступна новая версия v{_availableUpdate.Version}";
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex)
+        {
+            UpdateStatusText = $"Не удалось проверить обновление: {ex.Message}";
+        }
+        finally
+        {
+            _isCheckingUpdate = false;
+            OnPropertyChanged(nameof(UpdateButtonText));
+            UpdateCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private async Task DownloadUpdateAsync(ReleaseUpdate release)
+    {
+        if (_isDownloadingUpdate || _disposed) return;
+        _isDownloadingUpdate = true;
+        _updateProgress = 0;
+        OnPropertyChanged(nameof(IsDownloadingUpdate));
+        OnPropertyChanged(nameof(UpdateProgress));
+        OnPropertyChanged(nameof(UpdateButtonText));
+        UpdateCommand.NotifyCanExecuteChanged();
+        UpdateStatusText = $"Загрузка v{release.Version}…";
+        var progress = new InlineProgress<DownloadProgress>(report =>
+        {
+            _updateProgress = report.Percent;
+            OnPropertyChanged(nameof(UpdateProgress));
+            OnPropertyChanged(nameof(UpdateButtonText));
+            UpdateStatusText = report.TotalBytes > 0
+                ? $"Загрузка v{release.Version}: {report.Percent}% · {report.BytesReceived / 1024d / 1024d:0.0} из {report.TotalBytes / 1024d / 1024d:0.0} МБ"
+                : $"Загружено {report.BytesReceived / 1024d / 1024d:0.0} МБ";
+        });
+        try
+        {
+            var installer = await _updateService.DownloadInstallerAsync(release, progress, _lifetime?.Token ?? CancellationToken.None);
+            _updateProgress = 100;
+            UpdateStatusText = $"Установщик v{release.Version} загружен. Запустить его?";
+            InstallerDownloaded?.Invoke(installer);
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception ex) { UpdateStatusText = $"Ошибка загрузки обновления: {ex.Message}"; }
+        finally
+        {
+            _isDownloadingUpdate = false;
+            OnPropertyChanged(nameof(IsDownloadingUpdate));
+            OnPropertyChanged(nameof(UpdateButtonText));
+            UpdateCommand.NotifyCanExecuteChanged();
+        }
     }
 
     private async Task StartMinerAsync()
@@ -188,13 +290,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool CanSaveMinerSettings() => !_isMinerBusy
         && System.Text.RegularExpressions.Regex.IsMatch(WorkerNameDraft.Trim(), "^[A-Za-z0-9._-]{1,32}$")
         && IsGpuListValid(CoreClockDraft, 0, 5000)
+        && IsGpuListLengthValid(CoreClockDraft)
         && IsGpuListValid(MemoryClockDraft, 0, 30000)
+        && IsGpuListLengthValid(MemoryClockDraft)
         && IsGpuListValid(PowerLimitDraft, 1, 1000)
+        && IsGpuListLengthValid(PowerLimitDraft)
         && IsGpuListValid(KernelDraft, 0, 16)
-        && IsGpuListValid(FanDraft, 0, 100, allowAuto: true);
+        && IsGpuListLengthValid(KernelDraft)
+        && IsGpuListValid(FanDraft, 0, 100, allowAuto: true)
+        && IsGpuListLengthValid(FanDraft);
+
+    private bool IsGpuListLengthValid(string text) => string.IsNullOrWhiteSpace(text)
+        || text.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)
+        || text.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)
+        || Gpus.Count == 0
+        || text.Split(',', StringSplitOptions.TrimEntries).Length == Gpus.Count;
 
     private static bool IsGpuListValid(string text, int min, int max, bool allowAuto = false)
     {
+        if (string.IsNullOrWhiteSpace(text) || text.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || text.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)) return true;
         var values = text.Split(',', StringSplitOptions.TrimEntries);
         return values.Length is > 0 and <= 16 && values.All(value =>
             (allowAuto && value == "*") ||
@@ -210,17 +324,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _config = _config with
             {
                 WorkerName = WorkerNameDraft.Trim(),
-                CoreClock = string.Join(',', CoreClockDraft.Split(',', StringSplitOptions.TrimEntries)),
-                MemoryClock = string.Join(',', MemoryClockDraft.Split(',', StringSplitOptions.TrimEntries)),
-                PowerLimit = string.Join(',', PowerLimitDraft.Split(',', StringSplitOptions.TrimEntries)),
-                Kernel = string.Join(',', KernelDraft.Split(',', StringSplitOptions.TrimEntries)),
-                Fan = string.Join(',', FanDraft.Split(',', StringSplitOptions.TrimEntries))
+                CoreClock = NormalizeGpuSetting(CoreClockDraft),
+                MemoryClock = NormalizeGpuSetting(MemoryClockDraft),
+                PowerLimit = NormalizeGpuSetting(PowerLimitDraft),
+                Kernel = NormalizeGpuSetting(KernelDraft),
+                Fan = NormalizeGpuSetting(FanDraft)
             };
             await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             _minerControl.UpdateConfig(_config);
             MinerControlStatus = _minerControl.IsRunning
                 ? "Настройки сохранены для следующего запуска майнера"
-                : "Настройки сохранены на этом компьютере";
+                : "Автопрофиль GPU сохранён локально; разгон не задан";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -305,6 +419,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void Apply(TelemetrySnapshot snapshot)
     {
+        _gpuDiscoveryCompleted = true;
         MinerApiStatus = snapshot.MinerApiMessage;
         HardwareStatus = snapshot.NvidiaMessage;
         PoolStatus = snapshot.PoolConnected switch { true => "Подключён", false => "Нет подключения", null => "Нет данных" };
@@ -337,6 +452,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             else Gpus.Add(ordered[index]);
         }
         OnPropertyChanged(nameof(HasNoGpus));
+        OnPropertyChanged(nameof(GpuCountLabel));
+        OnPropertyChanged(nameof(MaxGpuHashrateTHs));
     }
 
     private void ApplyEarnings(PoolEarningsSnapshot earnings)
@@ -378,6 +495,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private static string FormatPrl(double? amount) => amount is double value ? $"{value:0.########} PRL" : "Нет данных";
 
+    private static string SettingDraft(string value) => string.IsNullOrWhiteSpace(value) ? "Авто" : value;
+
+    private static string NormalizeGpuSetting(string value) =>
+        string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : string.Join(',', value.Split(',', StringSplitOptions.TrimEntries));
+
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
@@ -387,6 +511,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private void OnPropertyChanged(string propertyName) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
 
     public void Dispose()
     {

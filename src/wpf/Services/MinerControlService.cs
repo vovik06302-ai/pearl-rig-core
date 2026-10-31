@@ -150,9 +150,19 @@ public sealed class MinerControlService
     private static string BuildArguments(RigConfig rig)
     {
         static string Arg(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
-        return $"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)} --worker {Arg(rig.WorkerName)} " +
-               $"--cclk {Arg(rig.CoreClock)} --mclk {Arg(rig.MemoryClock)} --pl {Arg(rig.PowerLimit)} " +
-               $"--kernel {Arg(rig.Kernel)} --fan {Arg(rig.Fan)} --api-port {rig.ApiPort}";
+        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)} --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort}");
+        AddOverride(arguments, "--cclk", rig.CoreClock, Arg);
+        AddOverride(arguments, "--mclk", rig.MemoryClock, Arg);
+        AddOverride(arguments, "--pl", rig.PowerLimit, Arg);
+        AddOverride(arguments, "--kernel", rig.Kernel, Arg);
+        AddOverride(arguments, "--fan", rig.Fan, Arg);
+        return arguments.ToString();
+    }
+
+    private static void AddOverride(StringBuilder arguments, string option, string value, Func<string, string> quote)
+    {
+        if (!string.IsNullOrWhiteSpace(value) && !value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) && !value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase))
+            arguments.Append(' ').Append(option).Append(' ').Append(quote(value.Trim()));
     }
 
     private static string? ResolveMinerPath()
@@ -162,6 +172,7 @@ public sealed class MinerControlService
             Path.Combine(AppContext.BaseDirectory, "miner", "onezerominer.exe"),
             Path.Combine(AppContext.BaseDirectory, "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PearlRigControl", "miner", "onezerominer.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Pearl Rig Control", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "PearlRigCore", "onezerominer.exe"),
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "onezerominer.exe"))
         };

@@ -36,7 +36,7 @@ public sealed class TelemetryService(MinerApiClient minerApi, NvidiaSmiClient nv
                 CclkMHz = hardware?.CclkMHz ?? minerDevice?.CclkMHz,
                 MclkMHz = hardware?.MclkMHz ?? minerDevice?.MclkMHz,
                 Status = hardware is not null || minerDevice is not null ? "available" : "no_data",
-                Source = hardware is not null ? "nvidia-smi" : minerDevice is not null ? "miner-api" : null
+                Source = hardware?.Source == "nvidia-smi" ? "nvidia-smi" : minerDevice is not null ? "miner-api" : hardware?.Source
             };
         }).ToArray();
 
