@@ -42,6 +42,10 @@ public sealed class MinerControlService
         if (minerPath is null)
             throw new FileNotFoundException("Не найден onezerominer.exe. Поместите его в подпапку miner рядом с программой или в C:\\PearlRigCore.");
 
+        var logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PearlRigControl", "logs");
+        Directory.CreateDirectory(logDirectory);
+        var logPath = Path.Combine(logDirectory, "onezerominer.log");
+
         var startInfo = new ProcessStartInfo
         {
             FileName = minerPath,
@@ -49,7 +53,7 @@ public sealed class MinerControlService
             UseShellExecute = true,
             Verb = "runas",
             WindowStyle = ProcessWindowStyle.Normal,
-            Arguments = BuildArguments(_config with { WalletAddress = walletAddress })
+            Arguments = BuildArguments(_config with { WalletAddress = walletAddress }, logPath)
         };
         cancellationToken.ThrowIfCancellationRequested();
         try
@@ -61,8 +65,12 @@ public sealed class MinerControlService
         {
             throw new OperationCanceledException("Запуск отменён в запросе контроля учётных записей Windows.", ex, cancellationToken);
         }
-        await Task.Delay(800, cancellationToken);
-        if (!IsRunning) throw new InvalidOperationException("Процесс OneZeroMiner завершился сразу после запуска. Проверьте параметры и лог майнера.");
+        await Task.Delay(2500, cancellationToken);
+        if (!IsRunning)
+        {
+            var excerpt = ReadLogExcerpt(logPath);
+            throw new InvalidOperationException($"OneZeroMiner завершился при запуске. Лог: {logPath}{(excerpt.Length == 0 ? string.Empty : Environment.NewLine + excerpt)}");
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
@@ -147,10 +155,10 @@ public sealed class MinerControlService
         }
     }
 
-    private static string BuildArguments(RigConfig rig)
+    private static string BuildArguments(RigConfig rig, string logPath)
     {
         static string Arg(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
-        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)} --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort}");
+        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)} --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort} --log-file {Arg(logPath)}");
         AddOverride(arguments, "--cclk", rig.CoreClock, Arg);
         AddOverride(arguments, "--mclk", rig.MemoryClock, Arg);
         AddOverride(arguments, "--pl", rig.PowerLimit, Arg);
@@ -179,6 +187,20 @@ public sealed class MinerControlService
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "onezerominer.exe"))
         };
         return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static string ReadLogExcerpt(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return string.Empty;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            var text = reader.ReadToEnd();
+            return text.Length <= 3000 ? text : text[^3000..];
+        }
+        catch (IOException) { return string.Empty; }
+        catch (UnauthorizedAccessException) { return string.Empty; }
     }
 
     private static string EscapePowerShell(string value) => value.Replace("'", "''", StringComparison.Ordinal);

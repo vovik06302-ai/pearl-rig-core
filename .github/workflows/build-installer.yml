@@ -51,6 +51,13 @@ jobs:
           New-Item -ItemType Directory -Path 'miner' -Force | Out-Null
           Copy-Item -Path (Join-Path $package '*') -Destination 'miner' -Recurse -Force
 
+      - name: Download and verify Microsoft Visual C++ Runtime
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile 'vc_redist.x64.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath 'vc_redist.x64.exe'
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'The Visual C++ runtime download does not have a valid Microsoft signature.' }
+
       - name: Set up .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
