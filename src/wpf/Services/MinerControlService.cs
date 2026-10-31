@@ -171,8 +171,10 @@ public sealed class MinerControlService
         {
             Path.Combine(AppContext.BaseDirectory, "miner", "onezerominer.exe"),
             Path.Combine(AppContext.BaseDirectory, "onezerominer.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Pearl Rig Control", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PearlRigControl", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Pearl Rig Control", "miner", "onezerominer.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Pearl Rig Control", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "PearlRigCore", "onezerominer.exe"),
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "onezerominer.exe"))
         };

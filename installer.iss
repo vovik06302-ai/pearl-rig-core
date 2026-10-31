@@ -1,5 +1,5 @@
 #define AppName "Pearl Rig Control"
-#define AppVersion "3.4.2"
+#define AppVersion "3.4.3"
 #define AppPublisher "Pearl Rig Control"
 #define AppExeName "PearlRigControl.exe"
 
@@ -34,8 +34,7 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Source: "publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "rig-config.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pearl-icon.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "onezerominer.exe"; DestDir: "{app}\miner"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "miner\*"; DestDir: "{app}\miner"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "miner\*"; DestDir: "{app}\miner"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\pearl-icon.ico"
