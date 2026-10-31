@@ -1,7 +1,7 @@
 #define AppName "Pearl Rig Control"
-#define AppVersion "3.3.10"
+#define AppVersion "3.4.0"
 #define AppPublisher "Pearl Rig Control"
-#define AppExeName "pearl_watchdog_agent.bat"
+#define AppExeName "PearlRigControl.exe"
 
 [Setup]
 AppId={{D5C60A71-6B5B-4FB7-99F4-5BAE302C9CF0}}
@@ -13,11 +13,11 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=Output
 OutputBaseFilename=PearlRigControl-Setup
 SetupIconFile=pearl-icon.ico
-UninstallDisplayIcon={app}\pearl-icon.ico
+UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -31,14 +31,15 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительные ярлыки:"; Flags: unchecked
 
 [Files]
-Source: "pearl_watchdog_agent.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "rig-config.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pearl-icon.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "miner\*"; DestDir: "{app}\miner"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "onezerominer.exe"; DestDir: "{app}\miner"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "miner\*"; DestDir: "{app}\miner"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\pearl-icon.ico"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\pearl-icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Запустить {#AppName}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\{#AppExeName}"; Description: "Запустить {#AppName}"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent

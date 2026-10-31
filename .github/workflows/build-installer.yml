@@ -2,7 +2,7 @@ name: Build Pearl Rig Control installer
 
 on:
   push:
-    branches: [main, fix/native-windows-window]
+    branches: [main, fix/native-windows-window, 'codex/**']
   pull_request:
   workflow_dispatch:
   release:
@@ -18,40 +18,22 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Prepare PowerShell payload
-        shell: pwsh
-        run: |
-          $source = Get-Content -LiteralPath 'pearl_watchdog_agent.bat' -Raw -Encoding UTF8
-          $marker = ':: ___PS_' + 'START___'
-          $index = $source.IndexOf($marker)
-          if ($index -lt 0) { throw 'Embedded PowerShell payload marker was not found' }
-          $payload = $source.Substring($index + $marker.Length).TrimStart()
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseInput($payload, [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.ToString() }; throw 'PowerShell payload syntax is invalid' }
-          $bom = [Text.UTF8Encoding]::new($true)
-          [IO.File]::WriteAllText('pearl_watchdog_agent.bat', $source, $bom)
-
-      - name: Generate Pearl desktop icon
+      - name: Generate Pearl application icon
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Drawing
           $bmp = New-Object System.Drawing.Bitmap(64, 64)
           $g = [System.Drawing.Graphics]::FromImage($bmp)
           $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-          $bgBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 11, 15, 23))
-          $g.FillEllipse($bgBrush, 2, 2, 60, 60)
-          $ringPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 16, 185, 129), 4)
-          $g.DrawEllipse($ringPen, 6, 6, 52, 52)
-          $pearlBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 52, 211, 153))
-          $g.FillEllipse($pearlBrush, 20, 20, 24, 24)
-          $g.Dispose()
+          $bg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 11, 15, 23))
+          $g.FillEllipse($bg, 2, 2, 60, 60)
+          $ring = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 0, 229, 192), 4)
+          $g.DrawEllipse($ring, 6, 6, 52, 52)
+          $pearl = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 52, 211, 153))
+          $g.FillEllipse($pearl, 20, 20, 24, 24)
           $icon = [System.Drawing.Icon]::FromHandle($bmp.GetHIcon())
           $fs = New-Object System.IO.FileStream('pearl-icon.ico', [System.IO.FileMode]::Create)
-          $icon.Save($fs)
-          $fs.Close()
-          $bmp.Dispose()
+          try { $icon.Save($fs) } finally { $fs.Dispose(); $icon.Dispose(); $g.Dispose(); $bmp.Dispose(); $bg.Dispose(); $ring.Dispose(); $pearl.Dispose() }
 
       - name: Download and verify official OneZeroMiner
         shell: pwsh
@@ -62,35 +44,46 @@ jobs:
           $expected = 'bdbd0faf6144237bf4d975e4160f83c9ed8f00d291270f4fa42e037de220f209'
           $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "OneZeroMiner SHA256 mismatch: $actual" }
-          $stage = Join-Path $PWD 'miner'
           $expanded = Join-Path $PWD 'miner-expanded'
           Expand-Archive -LiteralPath $archive -DestinationPath $expanded
           $package = Join-Path $expanded 'onezerominer-win64-1.8.3'
-          if (-not (Test-Path (Join-Path $package 'onezerominer.exe'))) { throw 'Official OneZeroMiner executable was not found in the archive' }
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          Copy-Item -Path (Join-Path $package '*') -Destination $stage -Recurse -Force
-          if (-not (Test-Path (Join-Path $stage 'onezerominer.exe'))) { throw 'OneZeroMiner staging failed' }
+          if (-not (Test-Path (Join-Path $package 'onezerominer.exe') -PathType Leaf)) { throw 'Official OneZeroMiner executable was not found in the archive' }
+          New-Item -ItemType Directory -Path 'miner' -Force | Out-Null
+          Copy-Item -Path (Join-Path $package '*') -Destination 'miner' -Recurse -Force
 
-      - name: Compile Windows installer
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build and publish WPF application
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $required = @('installer.iss', 'pearl_watchdog_agent.bat', 'pearl-icon.ico', 'miner/onezerominer.exe')
-          foreach ($path in $required) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required installer input is missing: $path" }
-          }
+          dotnet restore 'src/wpf/PearlRigCore.csproj' --runtime win-x64 --source 'https://api.nuget.org/v3/index.json'
+          if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE" }
+          dotnet publish 'src/wpf/PearlRigCore.csproj' --configuration Release --runtime win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false --output 'publish/win-x64'
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path 'publish/win-x64/PearlRigControl.exe' -PathType Leaf)) { throw 'Published WPF executable was not created' }
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
           $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
             choco install innosetup --yes --no-progress
             if ($LASTEXITCODE -ne 0) { throw "Chocolatey failed to install Inno Setup (exit code $LASTEXITCODE)" }
           }
-          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "Inno Setup compiler was not found at $iscc after installation" }
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "ISCC.exe was not found at $iscc" }
 
+      - name: Compile Windows installer
+        shell: pwsh
+        run: |
+          $required = @('installer.iss', 'publish/win-x64/PearlRigControl.exe', 'rig-config.json', 'pearl-icon.ico', 'miner/onezerominer.exe')
+          foreach ($path in $required) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required installer input is missing: $path" } }
           New-Item -ItemType Directory -Path 'Output' -Force | Out-Null
-          & $iscc '/Qp' (Join-Path $env:GITHUB_WORKSPACE 'installer.iss')
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' (Join-Path $env:GITHUB_WORKSPACE 'installer.iss')
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
-          if (-not (Test-Path -LiteralPath 'Output/PearlRigControl-Setup.exe' -PathType Leaf)) { throw 'Installer EXE was not created at Output/PearlRigControl-Setup.exe' }
+          if (-not (Test-Path -LiteralPath 'Output/PearlRigControl-Setup.exe' -PathType Leaf)) { throw 'Installer EXE was not created' }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
