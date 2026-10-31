@@ -268,6 +268,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         MinerControlStatus = "Запуск OneZeroMiner…";
         try
         {
+            if (!_gpuDiscoveryCompleted)
+            {
+                var snapshot = await _telemetry.ReadAsync(_lifetime?.Token ?? CancellationToken.None);
+                Apply(snapshot);
+            }
+
+            var detectedGpus = Gpus.ToArray();
+            var nvidiaGpus = detectedGpus.Where(IsNvidiaGpu).ToArray();
+            if (detectedGpus.Length > 0 && nvidiaGpus.Length == 0)
+            {
+                var names = string.Join(", ", detectedGpus.Select(gpu => gpu.Name));
+                throw new InvalidOperationException($"Обнаружены {names}. PearlHash в OneZeroMiner поддерживает только видеокарты NVIDIA; запуск на AMD RX Vega невозможен. Для майнинга PRL на этом ПК нужен другой майнер с поддержкой PearlHash на AMD.");
+            }
+
             var wallet = WalletAddressDraft.Trim();
             if (!PoolEarningsClient.IsValidWallet(wallet))
                 throw new InvalidOperationException("Сначала введите и сохраните корректный адрес PRL.");
@@ -277,13 +291,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
             }
             await _minerControl.StartAsync(wallet, _lifetime?.Token ?? CancellationToken.None);
-            MinerControlStatus = "Майнер запущен";
+            var unsupported = detectedGpus.Where(gpu => !IsNvidiaGpu(gpu)).Select(gpu => gpu.Name).ToArray();
+            MinerControlStatus = unsupported.Length == 0
+                ? "Майнер запущен"
+                : $"Майнер запущен на NVIDIA; AMD не используется для PearlHash: {string.Join(", ", unsupported)}";
             _ = RefreshAsync(force: true);
         }
         catch (OperationCanceledException) { MinerControlStatus = "Запуск отменён"; }
         catch (Exception ex) { MinerControlStatus = $"Не запущен: {ex.Message}"; }
         finally { EndMinerAction(); }
     }
+
+    private static bool IsNvidiaGpu(GpuLiveMetrics gpu) =>
+        gpu.Name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase)
+        || gpu.Name.Contains("GeForce", StringComparison.OrdinalIgnoreCase)
+        || gpu.Name.Contains("Quadro", StringComparison.OrdinalIgnoreCase)
+        || gpu.Name.Contains("Tesla", StringComparison.OrdinalIgnoreCase);
 
     private async Task StopMinerAsync()
     {
