@@ -200,16 +200,45 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
+                <Border Background="#0C1B20" BorderBrush="#17645B" BorderThickness="1" CornerRadius="11" Padding="14,10" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="9" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="ЛИМИТ МОЩНОСТИ GPU · ПЕРЕДВИНЬТЕ ПОЛЗУНОК ПО ГОРИЗОНТАЛЬНОЙ ШКАЛЕ" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding PowerSliderValue, StringFormat={}{0:0} Вт}" Foreground="{StaticResource AccentBrush}" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,0,0" />
+                        </Grid>
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="48" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding PowerSliderMinimum, StringFormat={}{0:0}}" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" />
+                            <Slider x:Name="PowerLimitSlider" Grid.Column="1" Minimum="{Binding PowerSliderMinimum}" Maximum="{Binding PowerSliderMaximum}" Value="{Binding PowerSliderValue, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanAdjustPowerLimit}" Height="44" Margin="8,0" TickFrequency="10" IsSnapToTickEnabled="True" TickPlacement="BottomRight" AutoToolTipPlacement="TopLeft" ValueChanged="PowerLimitSlider_ValueChanged" ToolTip="Переместите ползунок по горизонтали, чтобы задать лимит в ваттах" />
+                            <TextBlock Grid.Column="2" Text="{Binding PowerSliderMaximum, StringFormat={}{0:0}}" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                        </Grid>
+                        <Border Grid.Row="2" Background="#17232E" CornerRadius="4" ClipToBounds="True" Margin="49,0">
+                            <Border Height="9" HorizontalAlignment="Stretch" CornerRadius="4" RenderTransformOrigin="0,0.5">
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                        <GradientStop Color="#00D6A2" Offset="0" />
+                                        <GradientStop Color="#D2D943" Offset="0.58" />
+                                        <GradientStop Color="#FF5B57" Offset="1" />
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                                <Border.RenderTransform><ScaleTransform x:Name="PowerGaugeScale" ScaleX="0.2" /></Border.RenderTransform>
+                            </Border>
+                        </Border>
+                        <TextBlock Grid.Row="3" Text="{Binding PowerRangeHint}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
+                    </Grid>
+                </Border>
                 <UniformGrid Columns="7">
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="ИМЯ РАБОТНИКА" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding WorkerNameDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Имя этой фермы в статистике пула, например pc1" /></StackPanel>
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="ЯДРО · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding CoreClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения через запятую по ID GPU" /></StackPanel>
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="ПАМЯТЬ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding MemoryClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения через запятую по ID GPU" /></StackPanel>
-                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ЛИМИТ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding PowerLimitDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения в ваттах через запятую по ID GPU" /></StackPanel>
+                    <StackPanel Margin="0,0,8,0"><TextBlock Text="ЛИМИТЫ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding PowerLimitDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения в ваттах через запятую по ID GPU. Ползунок задаёт общий лимит всем картам." /></StackPanel>
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="KERNEL · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding KernelDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения через запятую по ID GPU" /></StackPanel>
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="ВЕНТИЛЯТОР · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding FanDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения процентов через запятую по ID GPU" /></StackPanel>
-                    <Button Content="СОХРАНИТЬ" Command="{Binding SaveMinerSettingsCommand}" Padding="8,8" FontSize="11" VerticalAlignment="Bottom" ToolTip="Сохранить настройки локально; они применятся при следующем запуске майнера" />
+                    <Button Content="СОХРАНИТЬ И ПРИМЕНИТЬ" Command="{Binding SaveMinerSettingsCommand}" Padding="8,8" FontSize="11" VerticalAlignment="Bottom" ToolTip="Сохранить профиль и применить лимит мощности сейчас; Windows запросит права администратора" />
                 </UniformGrid>
-                <TextBlock Text="Счётчик выше показывает все обнаруженные видеокарты. По умолчанию выбрано Авто: не задаём общий разгон картам разных моделей. Для ручного профиля укажите отдельное значение на каждый ID GPU через запятую; вентилятор допускает * для автоматического режима. Применение — при следующем запуске майнера." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,8,0,0" TextWrapping="Wrap" />
+                <TextBlock Text="Ползунок задаёт одинаковый предел всем NVIDIA GPU; отдельные значения можно ввести в поле лимитов через запятую. Нажмите «СОХРАНИТЬ И ПРИМЕНИТЬ» — Windows запросит подтверждение, программа проверит новый лимит драйвера. Лимит — это верхняя граница, фактические ватты зависят от нагрузки. Частоты и вентилятор применятся при следующем запуске майнера." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,8,0,0" TextWrapping="Wrap" />
             </StackPanel>
         </Border>
 

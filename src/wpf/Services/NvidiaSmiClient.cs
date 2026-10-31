@@ -16,6 +16,10 @@ public sealed record NvidiaGpuReading(
     double? CclkMHz,
     double? MclkMHz,
     double? VramTempC,
+    double? PowerLimitWatts = null,
+    double? MinPowerLimitWatts = null,
+    double? MaxPowerLimitWatts = null,
+    double? DefaultPowerLimitWatts = null,
     string Source = "nvidia-smi");
 
 public sealed record NvidiaReadResult(bool Available, string Message, IReadOnlyList<NvidiaGpuReading> Gpus);
@@ -23,7 +27,7 @@ public sealed record NvidiaReadResult(bool Available, string Message, IReadOnlyL
 public sealed class NvidiaSmiClient
 {
     // Avoid optional NVML fields such as temperature.memory: unsupported fields can make nvidia-smi fail the whole query.
-    private const string Query = "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory --format=csv,noheader,nounits";
+    private const string Query = "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory,power.limit,power.min_limit,power.max_limit,power.default_limit --format=csv,noheader,nounits";
     private readonly object _inventoryLock = new();
     private DateTimeOffset _inventoryFetchedAt;
     private NvidiaReadResult? _inventoryCache;
@@ -69,6 +73,80 @@ public sealed class NvidiaSmiClient
         }
     }
 
+    /// <summary>Sets per-GPU NVIDIA power caps with elevation and verifies the values returned by the driver.</summary>
+    public async Task<string> ApplyPowerLimitsAsync(string draft, CancellationToken cancellationToken)
+    {
+        var inventory = await ReadAsync(cancellationToken);
+        var cards = inventory.Gpus.Where(gpu => gpu.Source == "nvidia-smi").OrderBy(gpu => gpu.Id).ToArray();
+        if (cards.Length == 0)
+            throw new InvalidOperationException($"Нужны доступные датчики NVIDIA для применения лимита. {inventory.Message}");
+
+        var isAuto = draft.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || draft.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase);
+        var fields = isAuto ? [] : draft.Split(',', StringSplitOptions.TrimEntries);
+        if (!isAuto && fields.Length != cards.Length)
+            throw new InvalidOperationException($"Для {cards.Length} NVIDIA GPU задайте {cards.Length} значений лимита в ваттах через запятую.");
+
+        var targets = new List<(NvidiaGpuReading Gpu, int Watts)>();
+        for (var index = 0; index < cards.Length; index++)
+        {
+            var gpu = cards[index];
+            if (gpu.MinPowerLimitWatts is not double min || gpu.MaxPowerLimitWatts is not double max)
+                throw new InvalidOperationException($"Драйвер NVIDIA не сообщил диапазон лимита для GPU #{gpu.Id}; настройка не применена.");
+            int watts;
+            if (isAuto)
+                watts = (int)Math.Round(gpu.DefaultPowerLimitWatts ?? throw new InvalidOperationException($"Драйвер не сообщил заводской лимит GPU #{gpu.Id}; режим «Авто» нельзя применить сразу."));
+            else if (!int.TryParse(fields[index], NumberStyles.None, CultureInfo.InvariantCulture, out watts))
+                throw new InvalidOperationException("Лимит мощности должен содержать целые значения в ваттах.");
+            if (watts < Math.Ceiling(min) || watts > Math.Floor(max))
+                throw new InvalidOperationException($"Для GPU #{gpu.Id} драйвер допускает {min:0.#}–{max:0.#} Вт, введено {watts} Вт.");
+            targets.Add((gpu, watts));
+        }
+
+        var executable = ResolveExecutable() ?? throw new InvalidOperationException("nvidia-smi не найден.");
+        var commands = string.Join(Environment.NewLine, targets.Select(target =>
+            $"& $nvidiaSmi -i {target.Gpu.Id} -pl {target.Watts}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}"));
+        var script = $"$ErrorActionPreference = 'Stop'\n$nvidiaSmi = '{EscapePowerShell(executable)}'\n{commands}\nexit 0";
+        await RunElevatedAsync(script, cancellationToken);
+        await Task.Delay(250, cancellationToken);
+
+        var after = await ReadAsync(cancellationToken);
+        foreach (var target in targets)
+        {
+            var actual = after.Gpus.FirstOrDefault(gpu => gpu.Id == target.Gpu.Id)?.PowerLimitWatts;
+            if (actual is not double value || Math.Abs(value - target.Watts) > 0.5)
+                throw new InvalidOperationException($"Драйвер не подтвердил лимит {target.Watts} Вт для GPU #{target.Gpu.Id}; получено: {(actual is double cap ? $"{cap:0.#} Вт" : "нет данных")}.");
+        }
+
+        return string.Join("; ", targets.Select(target => $"GPU #{target.Gpu.Id}: {target.Watts} Вт"));
+    }
+
+    private static async Task RunElevatedAsync(string script, CancellationToken cancellationToken)
+    {
+        var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+        var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var info = new ProcessStartInfo
+        {
+            FileName = powershell,
+            Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {encoded}",
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+        try
+        {
+            using var process = Process.Start(info) ?? throw new InvalidOperationException("Не удалось запустить операцию управления питанием.");
+            await process.WaitForExitAsync(cancellationToken);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"nvidia-smi не изменил лимит мощности (код {process.ExitCode}). Проверьте права Windows и поддержку драйвера.");
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            throw new OperationCanceledException("Применение отменено в запросе контроля учётных записей Windows.", ex, cancellationToken);
+        }
+    }
+
+    private static string EscapePowerShell(string value) => value.Replace("'", "''", StringComparison.Ordinal);
+
     private async Task<NvidiaReadResult> ReadWindowsInventoryCachedAsync(CancellationToken cancellationToken)
     {
         lock (_inventoryLock)
@@ -106,7 +184,7 @@ public sealed class NvidiaSmiClient
             var gpus = entries.Select((entry, index) =>
             {
                 var name = entry.TryGetProperty("Name", out var nameElement) ? nameElement.GetString() : null;
-                return string.IsNullOrWhiteSpace(name) ? null : new NvidiaGpuReading(index, null, name.Trim(), null, null, null, null, null, null, "windows-inventory");
+                return string.IsNullOrWhiteSpace(name) ? null : new NvidiaGpuReading(index, null, name.Trim(), null, null, null, null, null, null, Source: "windows-inventory");
             }).Where(gpu => gpu is not null).Cast<NvidiaGpuReading>().ToArray();
             return gpus.Length == 0
                 ? new(false, "Windows не обнаружила видеокарты. Проверьте драйвер и подключение GPU.", [])
@@ -175,7 +253,11 @@ public sealed class NvidiaSmiClient
             hasFan ? ParseNumber(fields[5]) : null,
             hasClocks ? ParseNumber(fields[hasFan ? 6 : 5]) : null,
             hasClocks ? ParseNumber(fields[hasFan ? 7 : 6]) : null,
-            null);
+            null,
+            fields.Length >= 12 ? ParseNumber(fields[8]) : null,
+            fields.Length >= 12 ? ParseNumber(fields[9]) : null,
+            fields.Length >= 12 ? ParseNumber(fields[10]) : null,
+            fields.Length >= 12 ? ParseNumber(fields[11]) : null);
     }
 
     private static int? ParseBusId(string value)

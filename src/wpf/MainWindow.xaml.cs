@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly HttpClient _minerHttpClient;
     private readonly HttpClient _poolHttpClient;
     private readonly HttpClient _updateHttpClient;
+    private readonly NvidiaSmiClient _nvidiaSmi;
 
     public MainWindow()
     {
@@ -26,8 +27,9 @@ public partial class MainWindow : Window
         _minerHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         _poolHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
         _updateHttpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        var telemetry = new TelemetryService(new MinerApiClient(_minerHttpClient), new NvidiaSmiClient(), config.ApiPort);
-        _viewModel = new MainViewModel(telemetry, new PoolEarningsClient(_poolHttpClient), new MinerControlService(config), new UpdateService(_updateHttpClient), config);
+        _nvidiaSmi = new NvidiaSmiClient();
+        var telemetry = new TelemetryService(new MinerApiClient(_minerHttpClient), _nvidiaSmi, config.ApiPort);
+        _viewModel = new MainViewModel(telemetry, new PoolEarningsClient(_poolHttpClient), new MinerControlService(config), new UpdateService(_updateHttpClient), _nvidiaSmi, config);
         _viewModel.InstallerDownloaded += LaunchDownloadedInstaller;
         DataContext = _viewModel;
     }
@@ -46,6 +48,18 @@ public partial class MainWindow : Window
         _minerHttpClient.Dispose();
         _poolHttpClient.Dispose();
         _updateHttpClient.Dispose();
+    }
+
+    private void PowerLimitSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (PowerGaugeScale is null || PowerLimitSlider is null) return;
+        var range = PowerLimitSlider.Maximum - PowerLimitSlider.Minimum;
+        var target = range <= 0 ? 0 : Math.Clamp((e.NewValue - PowerLimitSlider.Minimum) / range, 0, 1);
+        var animation = new DoubleAnimation(target, TimeSpan.FromMilliseconds(240))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        PowerGaugeScale.BeginAnimation(System.Windows.Media.ScaleTransform.ScaleXProperty, animation);
     }
 
     private void LaunchDownloadedInstaller(string installerPath)
