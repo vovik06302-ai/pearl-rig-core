@@ -1,6 +1,6 @@
 #define AppName "Pearl Rig Control"
 #ifndef AppVersion
-#define AppVersion "3.4.6"
+#define AppVersion "3.4.7"
 #endif
 #define AppPublisher "Pearl Rig Control"
 #define AppExeName "PearlRigControl.exe"
@@ -37,10 +37,26 @@ Source: "publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 Source: "rig-config.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pearl-icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "miner\*"; DestDir: "{app}\miner"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "vc_redist.x64.exe"; Flags: dontcopy
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\pearl-icon.ico"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\pearl-icon.ico"; Tasks: desktopicon
 
 [Run]
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Установка Microsoft Visual C++ Runtime для майнера..."; Verb: "runas"; Flags: shellexec waituntilterminated; Check: not HasVCRuntime
 Filename: "{app}\{#AppExeName}"; Description: "Запустить {#AppName}"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+
+[Code]
+function HasVCRuntime: Boolean;
+var
+  Installed: Cardinal;
+begin
+  Result := RegQueryDWordValue(HKLM64, 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Installed', Installed) and (Installed = 1);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and not HasVCRuntime then
+    ExtractTemporaryFile('vc_redist.x64.exe');
+end;
