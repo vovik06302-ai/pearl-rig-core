@@ -13,6 +13,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly PoolEarningsClient _earningsClient;
     private readonly MinerControlService _minerControl;
     private readonly UpdateService _updateService;
+    private readonly NvidiaSmiClient _nvidiaSmi;
     private RigConfig _config;
     private readonly int _earningsRefreshSeconds = 60;
     private readonly DispatcherTimer _timer;
@@ -52,6 +53,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _powerLimitDraft;
     private string _kernelDraft;
     private string _fanDraft;
+    private double _powerSliderValue = 150;
+    private double _powerSliderMinimum = 50;
+    private double _powerSliderMaximum = 600;
+    private bool _canAdjustPowerLimit;
+    private bool _powerSliderInitialized;
+    private string _powerRangeHint = "Ожидание диапазона мощности от драйвера NVIDIA…";
     private ReleaseUpdate? _availableUpdate;
     private Version _installedVersion;
     private bool _isCheckingUpdate;
@@ -59,12 +66,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private double _updateProgress;
     private string _updateStatusText = "Проверка версии…";
 
-    public MainViewModel(TelemetryService telemetry, PoolEarningsClient earningsClient, MinerControlService minerControl, UpdateService updateService, RigConfig config)
+    public MainViewModel(TelemetryService telemetry, PoolEarningsClient earningsClient, MinerControlService minerControl, UpdateService updateService, NvidiaSmiClient nvidiaSmi, RigConfig config)
     {
         _telemetry = telemetry;
         _earningsClient = earningsClient;
         _minerControl = minerControl;
         _updateService = updateService;
+        _nvidiaSmi = nvidiaSmi;
         _config = config;
         _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 4, 1);
         _autoStartMining = config.AutoStartMining;
@@ -128,7 +136,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string WorkerNameDraft { get => _workerNameDraft; set { if (Set(ref _workerNameDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string CoreClockDraft { get => _coreClockDraft; set { if (Set(ref _coreClockDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string MemoryClockDraft { get => _memoryClockDraft; set { if (Set(ref _memoryClockDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
-    public string PowerLimitDraft { get => _powerLimitDraft; set { if (Set(ref _powerLimitDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
+    public string PowerLimitDraft
+    {
+        get => _powerLimitDraft;
+        set
+        {
+            if (!Set(ref _powerLimitDraft, value)) return;
+            SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+            if (int.TryParse(value.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var watts))
+                Set(ref _powerSliderValue, Math.Clamp(watts, PowerSliderMinimum, PowerSliderMaximum), nameof(PowerSliderValue));
+        }
+    }
+    public double PowerSliderValue
+    {
+        get => _powerSliderValue;
+        set
+        {
+            var watts = Math.Clamp(value, PowerSliderMinimum, PowerSliderMaximum);
+            if (!Set(ref _powerSliderValue, watts)) return;
+            var valueText = Math.Round(watts).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            PowerLimitDraft = string.Join(',', Gpus.OrderBy(gpu => gpu.Id).Select(_ => valueText));
+        }
+    }
+    public double PowerSliderMinimum { get => _powerSliderMinimum; private set => Set(ref _powerSliderMinimum, value); }
+    public double PowerSliderMaximum { get => _powerSliderMaximum; private set => Set(ref _powerSliderMaximum, value); }
+    public bool CanAdjustPowerLimit { get => _canAdjustPowerLimit; private set => Set(ref _canAdjustPowerLimit, value); }
+    public string PowerRangeHint { get => _powerRangeHint; private set => Set(ref _powerRangeHint, value); }
     public string KernelDraft { get => _kernelDraft; set { if (Set(ref _kernelDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string FanDraft { get => _fanDraft; set { if (Set(ref _fanDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public bool HasNoGpus => Gpus.Count == 0;
@@ -332,9 +365,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             };
             await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             _minerControl.UpdateConfig(_config);
-            MinerControlStatus = _minerControl.IsRunning
-                ? "Настройки сохранены для следующего запуска майнера"
-                : "Автопрофиль GPU сохранён локально; разгон не задан";
+            try
+            {
+                var applied = await _nvidiaSmi.ApplyPowerLimitsAsync(_config.PowerLimit, _lifetime?.Token ?? CancellationToken.None);
+                MinerControlStatus = $"Лимит применён драйвером: {applied}. Фактическое потребление зависит от нагрузки; остальные настройки майнера применятся при следующем запуске.";
+            }
+            catch (OperationCanceledException)
+            {
+                MinerControlStatus = "Профиль сохранён; применение мощности отменено в запросе Windows.";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                MinerControlStatus = $"Профиль сохранён, но лимит мощности не применён: {ex.Message}";
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -450,6 +493,42 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (index < Gpus.Count) Gpus[index] = ordered[index];
             else Gpus.Add(ordered[index]);
+        }
+        var powerCards = ordered.Where(gpu => gpu.MinPowerLimitWatts is not null && gpu.MaxPowerLimitWatts is not null).ToArray();
+        if (ordered.Length > 0 && powerCards.Length == ordered.Length)
+        {
+            var minimum = Math.Ceiling(powerCards.Max(gpu => gpu.MinPowerLimitWatts!.Value));
+            var maximum = Math.Floor(powerCards.Min(gpu => gpu.MaxPowerLimitWatts!.Value));
+            if (minimum <= maximum)
+            {
+                PowerSliderMinimum = minimum;
+                PowerSliderMaximum = maximum;
+                CanAdjustPowerLimit = true;
+                PowerRangeHint = $"Диапазон драйвера для всех {ordered.Length} карт: {minimum:0}–{maximum:0} Вт. Ползунок задаёт одинаковый лимит; раздельные значения — в поле по ID GPU.";
+                if (!_powerSliderInitialized)
+                {
+                    var firstDraft = PowerLimitDraft.Split(',', StringSplitOptions.TrimEntries).FirstOrDefault();
+                    var initial = int.TryParse(firstDraft, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+                        ? parsed
+                        : ordered[0].PowerLimitWatts ?? minimum;
+                    _powerSliderInitialized = true;
+                    Set(ref _powerSliderValue, Math.Clamp(initial, minimum, maximum), nameof(PowerSliderValue));
+                }
+                else
+                {
+                    Set(ref _powerSliderValue, Math.Clamp(PowerSliderValue, minimum, maximum), nameof(PowerSliderValue));
+                }
+            }
+            else
+            {
+                CanAdjustPowerLimit = false;
+                PowerRangeHint = "У карт нет общего диапазона мощности; задайте отдельные значения в поле по ID GPU.";
+            }
+        }
+        else
+        {
+            CanAdjustPowerLimit = false;
+            PowerRangeHint = "Ползунок включится после получения допустимого диапазона NVIDIA для всех карт.";
         }
         OnPropertyChanged(nameof(HasNoGpus));
         OnPropertyChanged(nameof(GpuCountLabel));
