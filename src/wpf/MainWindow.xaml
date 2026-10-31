@@ -174,6 +174,32 @@
                     <TextBlock Text="АВТОПРОФИЛЬ И ПАРАМЕТРЫ GPU" Style="{StaticResource MetricCaption}" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="1" Text="Авто использует заводские настройки найденных карт; ручные значения задаются списком по ID GPU" Foreground="{StaticResource MutedBrush}" FontSize="10" />
                 </Grid>
+                <TextBlock Text="ТЕКУЩИЕ ПОКАЗАНИЯ ВИДЕОКАРТ" Style="{StaticResource GpuMetricLabel}" Margin="0,0,0,6" />
+                <ItemsControl ItemsSource="{Binding Gpus}" Margin="0,0,0,8">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><primitives:UniformGrid Columns="2" /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#0D141D" BorderBrush="#1C2937" BorderThickness="1" CornerRadius="9" Padding="10,7" Margin="0,0,8,6">
+                                <Grid>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,7">
+                                        <TextBlock Text="GPU #" Foreground="{StaticResource AccentBrush}" FontSize="10" FontWeight="Bold" />
+                                        <TextBlock Text="{Binding Id}" Foreground="{StaticResource AccentBrush}" FontSize="10" FontWeight="Bold" Margin="2,0,7,0" />
+                                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}" FontSize="10" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <UniformGrid Grid.Row="1" Columns="4">
+                                        <StackPanel><TextBlock Text="ТЕМПЕРАТУРА" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding TemperatureText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel><TextBlock Text="МОЩНОСТЬ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding PowerText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel><TextBlock Text="ВЕНТИЛЯТОР" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding FanText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                        <StackPanel><TextBlock Text="ХЕШРЕЙТ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding HashrateText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
+                                    </UniformGrid>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
                 <UniformGrid Columns="7">
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="ИМЯ РАБОТНИКА" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding WorkerNameDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Имя этой фермы в статистике пула, например pc1" /></StackPanel>
                     <StackPanel Margin="0,0,8,0"><TextBlock Text="ЯДРО · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding CoreClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,5,0,0" Padding="8,6" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Авто или значения через запятую по ID GPU" /></StackPanel>
