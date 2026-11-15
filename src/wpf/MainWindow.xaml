@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:controls="clr-namespace:PearlRigCore.Controls"
-        Title="Pearl Rig Control v3.7.2" Height="980" Width="1340" MinHeight="760" MinWidth="1060"
+        Title="Pearl Rig Control v3.7.3" Height="980" Width="1340" MinHeight="760" MinWidth="1060"
         WindowStartupLocation="CenterScreen" Background="{StaticResource WindowBackground}"
         Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI"
         Loaded="Window_Loaded" StateChanged="Window_StateChanged" Closed="Window_Closed">

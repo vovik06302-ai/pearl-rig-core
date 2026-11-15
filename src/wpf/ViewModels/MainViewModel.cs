@@ -144,7 +144,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _telegramService = telegramService;
         _poolPingService = poolPingService;
         _config = config;
-        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 7, 2);
+        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 7, 3);
         _autoStartMining = config.AutoStartMining || MinerControlService.IsAutoStartTaskRegistered();
         _watchdogEnabled = config.WatchdogEnabled;
         _smartFanCurveEnabled = config.SmartFanCurveEnabled;
@@ -888,13 +888,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         UpdateStatusText = "Проверка GitHub Releases…";
         try
         {
-            var release = await _updateService.CheckForUpdateAsync(_installedVersion, _lifetime?.Token ?? CancellationToken.None);
+            var release = await _updateService.CheckAsync(_installedVersion, _lifetime?.Token ?? CancellationToken.None);
             _availableUpdate = release;
             OnPropertyChanged(nameof(UpdateAvailable));
             OnPropertyChanged(nameof(UpdateButtonText));
             UpdateStatusText = release is null
                 ? $"Установлена актуальная v{_installedVersion.ToString(3)}"
-                : $"Доступна v{release.Version} ({release.AssetSize / 1024d / 1024d:0.0} МБ) — нажмите для установки";
+                : $"Доступна v{release.Version} ({release.SizeBytes / 1024d / 1024d:0.0} МБ) — нажмите для установки";
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex) { UpdateStatusText = $"Проверка обновлений недоступна: {ex.Message}"; }

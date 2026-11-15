@@ -5,7 +5,11 @@ using System.Text.Json;
 
 namespace PearlRigCore.Services;
 
-public sealed record ReleaseUpdate(string Version, Uri InstallerUri, long SizeBytes, string? Sha256);
+public sealed record ReleaseUpdate(string Version, Uri InstallerUri, long SizeBytes, string? Sha256)
+{
+    public long AssetSize => SizeBytes;
+}
+
 public sealed record DownloadProgress(long BytesReceived, long TotalBytes)
 {
     public int Percent => TotalBytes > 0 ? (int)Math.Clamp(BytesReceived * 100d / TotalBytes, 0, 100) : 0;
@@ -14,6 +18,9 @@ public sealed record DownloadProgress(long BytesReceived, long TotalBytes)
 public sealed class UpdateService(HttpClient httpClient)
 {
     private const string LatestReleaseEndpoint = "https://api.github.com/repos/vovik06302-ai/pearl-rig-core/releases/latest";
+
+    public Task<ReleaseUpdate?> CheckForUpdateAsync(Version installedVersion, CancellationToken cancellationToken) =>
+        CheckAsync(installedVersion, cancellationToken);
 
     public async Task<ReleaseUpdate?> CheckAsync(Version installedVersion, CancellationToken cancellationToken)
     {
