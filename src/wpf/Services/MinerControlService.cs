@@ -1,19 +1,27 @@
 using System.Diagnostics;
 using System.IO;
+using System.Security.Principal;
 using System.Text;
 using PearlRigCore.Models;
 
 namespace PearlRigCore.Services;
 
-/// <summary>Starts OneZeroMiner with the configured Pearl pool and requests a graceful Ctrl+C shutdown.</summary>
+/// <summary>Starts OneZeroMiner with the configured Pearl pool, manages Windows Task Scheduler auto-start, and requests a graceful Ctrl+C shutdown.</summary>
 public sealed class MinerControlService
 {
     private const string TaskName = "PearlRigControl-AutoStart";
     private RigConfig _config;
+    private bool _useBackupPool;
 
     public MinerControlService(RigConfig config) => _config = config;
 
     public void UpdateConfig(RigConfig config) => _config = config;
+
+    public bool UseBackupPool
+    {
+        get => _useBackupPool;
+        set => _useBackupPool = value;
+    }
 
     public static string GetLogFilePath()
     {
@@ -22,11 +30,11 @@ public sealed class MinerControlService
         return Path.Combine(logDirectory, "onezerominer.log");
     }
 
-    public string GetCommandLinePreview(string? walletOverride = null)
+    public string GetCommandLinePreview(string? walletOverride = null, int gpuCount = 2)
     {
         var wallet = string.IsNullOrWhiteSpace(walletOverride) ? _config.WalletAddress : walletOverride.Trim();
-        var maskedWallet = PoolEarningsClient.IsValidWallet(wallet) ? wallet : "<PRL_WALLET>";
-        return $"onezerominer.exe {BuildArguments(_config with { WalletAddress = maskedWallet }, GetLogFilePath())}";
+        var maskedWallet = PoolEarningsClient.IsValidWallet(wallet) ? wallet.ToLowerInvariant() : "<PRL_WALLET>";
+        return $"onezerominer.exe {BuildArguments(_config with { WalletAddress = maskedWallet }, GetLogFilePath(), _useBackupPool, gpuCount)}";
     }
 
     public string ReadRecentLogLines(int maxLines = 18)
@@ -37,6 +45,31 @@ public sealed class MinerControlService
             return "Лог майнера пока пуст или майнер ещё не запускался.";
         var lines = excerpt.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
         return string.Join(Environment.NewLine, lines.TakeLast(maxLines));
+    }
+
+    public static bool IsAutoStartTaskRegistered()
+    {
+        try
+        {
+            var schtasks = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "schtasks.exe");
+            if (!File.Exists(schtasks)) return false;
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = schtasks,
+                Arguments = $"/Query /TN \"{TaskName}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            if (process is null) return false;
+            process.WaitForExit(2000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public bool IsRunning
@@ -55,27 +88,32 @@ public sealed class MinerControlService
         }
     }
 
-    public async Task StartAsync(string walletAddress, CancellationToken cancellationToken = default)
+    public async Task StartAsync(string walletAddress, int gpuCount = 2, CancellationToken cancellationToken = default)
     {
         if (IsRunning) return;
+        walletAddress = walletAddress.Trim().ToLowerInvariant();
         if (!PoolEarningsClient.IsValidWallet(walletAddress))
-            throw new InvalidOperationException("Сначала введите и сохраните корректный адрес PRL.");
+            throw new InvalidOperationException("Сначала введите и сохраните корректный адрес PRL (prl1p... или prl1q...).");
 
         var minerPath = ResolveMinerPath();
         if (minerPath is null)
-            throw new FileNotFoundException("Не найден onezerominer.exe. Поместите его в подпапку miner рядом с программой или в C:\\PearlRigCore.");
+            throw new FileNotFoundException("Не найден onezerominer.exe. Поместите его в подпапку miner рядом с программой или переустановите пакет PearlRigControl-Setup.exe.");
 
         var logPath = GetLogFilePath();
+        var arguments = BuildArguments(_config with { WalletAddress = walletAddress }, logPath, _useBackupPool, gpuCount);
+        var isElevated = IsCurrentProcessElevated();
 
         var startInfo = new ProcessStartInfo
         {
             FileName = minerPath,
             WorkingDirectory = Path.GetDirectoryName(minerPath)!,
             UseShellExecute = true,
-            Verb = "runas",
             WindowStyle = ProcessWindowStyle.Normal,
-            Arguments = BuildArguments(_config with { WalletAddress = walletAddress }, logPath)
+            Arguments = arguments
         };
+        if (!isElevated)
+            startInfo.Verb = "runas";
+
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
@@ -117,10 +155,25 @@ public sealed class MinerControlService
     public async Task SetAutoStartAsync(bool enabled, CancellationToken cancellationToken = default)
     {
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Не удалось определить путь приложения.");
+        var workDir = Path.GetDirectoryName(executable) ?? AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         var taskArgs = enabled
-            ? $"$a=New-ScheduledTaskAction -Execute '{EscapePowerShell(executable)}' -Argument '--auto-mine' -WorkingDirectory '{EscapePowerShell(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))}'; $t=New-ScheduledTaskTrigger -AtLogOn -User ($env:USERDOMAIN+'\\'+$env:USERNAME); $p=New-ScheduledTaskPrincipal -UserId ($env:USERDOMAIN+'\\'+$env:USERNAME) -LogonType Interactive -RunLevel Highest; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable; Register-ScheduledTask -TaskName '{TaskName}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
+            ? $"$a=New-ScheduledTaskAction -Execute '{EscapePowerShell(executable)}' -Argument '--auto-mine' -WorkingDirectory '{EscapePowerShell(workDir)}'; $t=New-ScheduledTaskTrigger -AtLogOn -User ($env:USERDOMAIN+'\\'+$env:USERNAME); $p=New-ScheduledTaskPrincipal -UserId ($env:USERDOMAIN+'\\'+$env:USERNAME) -LogonType Interactive -RunLevel Highest; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable; Register-ScheduledTask -TaskName '{TaskName}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
             : $"Unregister-ScheduledTask -TaskName '{TaskName}' -Confirm:$false -ErrorAction SilentlyContinue";
         await RunElevatedPowerShellAsync(taskArgs, cancellationToken);
+    }
+
+    private static bool IsCurrentProcessElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static async Task SendCtrlCAsAdministratorAsync(int processId, CancellationToken cancellationToken)
@@ -176,40 +229,60 @@ public sealed class MinerControlService
         }
     }
 
-    private static string BuildArguments(RigConfig rig, string logPath)
+    private static string BuildArguments(RigConfig rig, string logPath, bool useBackupPool, int gpuCount)
     {
         static string Arg(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
-        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)}");
-        if (!string.IsNullOrWhiteSpace(rig.BackupPool) && !string.Equals(rig.BackupPool.Trim(), rig.PrimaryPool.Trim(), StringComparison.OrdinalIgnoreCase))
-            arguments.Append(" -o2 ").Append(Arg(rig.BackupPool.Trim()));
-        arguments.Append($" --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort} --log-file {Arg(logPath)}");
-        AddOverride(arguments, "--cclk", rig.CoreClock, Arg);
-        AddOverride(arguments, "--mclk", rig.MemoryClock, Arg);
-        AddOverride(arguments, "--pl", rig.PowerLimit, Arg);
-        AddOverride(arguments, "--kernel", rig.Kernel, Arg);
-        AddOverride(arguments, "--fan", rig.Fan, Arg);
+        var activePool = useBackupPool && !string.IsNullOrWhiteSpace(rig.BackupPool)
+            ? rig.BackupPool.Trim()
+            : rig.PrimaryPool.Trim();
+
+        // NOTE: In OneZeroMiner v1.8.3, -o2 is for dual-mining coin #2 (--algo2), NOT a failover pool for coin #1.
+        // Passing -o2 without -a2 causes onezerominer.exe to exit immediately on startup.
+        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(activePool)} --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort} --log-file {Arg(logPath)}");
+        AddOverride(arguments, "--cclk", rig.CoreClock, gpuCount, Arg);
+        AddOverride(arguments, "--mclk", rig.MemoryClock, gpuCount, Arg);
+        AddOverride(arguments, "--pl", rig.PowerLimit, gpuCount, Arg);
+        AddOverride(arguments, "--kernel", rig.Kernel, gpuCount, Arg);
+        AddOverride(arguments, "--fan", rig.Fan, gpuCount, Arg);
         return arguments.ToString();
     }
 
-    private static void AddOverride(StringBuilder arguments, string option, string value, Func<string, string> quote)
+    private static void AddOverride(StringBuilder arguments, string option, string value, int gpuCount, Func<string, string> quote)
     {
-        if (!string.IsNullOrWhiteSpace(value) && !value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) && !value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase))
-            arguments.Append(' ').Append(option).Append(' ').Append(quote(value.Trim()));
+        if (string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return;
+
+        var normalized = parts.Length == 1 && gpuCount > 1
+            ? string.Join(',', Enumerable.Repeat(parts[0], gpuCount))
+            : string.Join(',', parts);
+
+        arguments.Append(' ').Append(option).Append(' ').Append(quote(normalized));
     }
 
     private static string? ResolveMinerPath()
     {
-        var candidates = new[]
+        var exeDir = Path.GetDirectoryName(Environment.ProcessPath);
+        var baseDir = AppContext.BaseDirectory;
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(exeDir))
         {
-            Path.Combine(AppContext.BaseDirectory, "miner", "onezerominer.exe"),
-            Path.Combine(AppContext.BaseDirectory, "onezerominer.exe"),
+            candidates.Add(Path.Combine(exeDir, "miner", "onezerominer.exe"));
+            candidates.Add(Path.Combine(exeDir, "onezerominer.exe"));
+        }
+        candidates.AddRange(
+        [
+            Path.Combine(baseDir, "miner", "onezerominer.exe"),
+            Path.Combine(baseDir, "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Pearl Rig Control", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PearlRigControl", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Pearl Rig Control", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Pearl Rig Control", "miner", "onezerominer.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "PearlRigCore", "onezerominer.exe"),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "onezerominer.exe"))
-        };
+            Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "onezerominer.exe"))
+        ]);
         return candidates.FirstOrDefault(File.Exists);
     }
 

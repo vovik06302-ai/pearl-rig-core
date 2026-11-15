@@ -13,11 +13,16 @@ public sealed record GpuLiveMetrics
     public double? FanPercent { get; init; }
     public double? PowerWatts { get; init; }
     public double? PowerLimitWatts { get; init; }
+    public double? EnforcedPowerLimitWatts { get; init; }
     public double? MinPowerLimitWatts { get; init; }
     public double? MaxPowerLimitWatts { get; init; }
     public double? DefaultPowerLimitWatts { get; init; }
     public double? CclkMHz { get; init; }
     public double? MclkMHz { get; init; }
+    public string? PState { get; init; }
+    public double? CoreUtilizationPercent { get; init; }
+    public double? MemoryUtilizationPercent { get; init; }
+    public double? HardwareEnergyKwh { get; init; }
     public string? ThrottleReasons { get; init; }
     public string? PcieLink { get; init; }
     public IReadOnlyList<double> HashrateHistory { get; init; } = [];
@@ -34,12 +39,50 @@ public sealed record GpuLiveMetrics
     public string EfficiencyText => EfficiencyGhPerWatt is double eff ? $"{eff:0.00} GH/W" : "— GH/W";
     public string TemperatureText => TempC is double value ? $"{value:0} °C" : "— °C";
     public string VramTemperatureText => VramTempC is double value ? $"{value:0} °C" : "— °C";
-    public string PowerText => $"{(PowerWatts is double draw ? $"{draw:0}" : "—")} / {(PowerLimitWatts is double cap ? $"{cap:0}" : "—")} W";
+
+    public string PowerText
+    {
+        get
+        {
+            var drawText = PowerWatts is double draw ? $"{draw:0}" : "—";
+            var capValue = EnforcedPowerLimitWatts ?? PowerLimitWatts;
+            var capText = capValue is double cap ? $"{cap:0}" : "—";
+            return $"{drawText} / {capText} W";
+        }
+    }
+
     public string FanText => FanPercent is double value ? $"{value:0}%" : "—";
     public string CoreClockText => CclkMHz is double value ? $"{value:0} MHz" : "— MHz";
     public string MemoryClockText => MclkMHz is double value ? $"{value:0} MHz" : "— MHz";
-    public string ThrottleText => string.IsNullOrWhiteSpace(ThrottleReasons) ? "Нет данных" : ThrottleReasons;
-    public string PcieLinkText => string.IsNullOrWhiteSpace(PcieLink) ? string.Empty : $" · {PcieLink}";
+
+    public string ThrottleText
+    {
+        get
+        {
+            var pStatePrefix = string.IsNullOrWhiteSpace(PState) ? string.Empty : $"{PState} · ";
+            var loadSuffix = CoreUtilizationPercent is double util ? $" ({util:0}%)" : string.Empty;
+            var baseThrottle = string.IsNullOrWhiteSpace(ThrottleReasons) ? "Нет данных" : ThrottleReasons;
+            return $"{pStatePrefix}{baseThrottle}{loadSuffix}";
+        }
+    }
+
+    public string PcieLinkText
+    {
+        get
+        {
+            var parts = new List<string>(3);
+            if (!string.IsNullOrWhiteSpace(PcieLink)) parts.Add(PcieLink);
+            if (!string.IsNullOrWhiteSpace(PState)) parts.Add(PState);
+            if (CoreUtilizationPercent is double gUtil)
+            {
+                var mText = MemoryUtilizationPercent is double mUtil ? $"/{mUtil:0}%" : string.Empty;
+                parts.Add($"Загрузка {gUtil:0}%{mText}");
+            }
+            if (HardwareEnergyKwh is double hwKwh && hwKwh > 0)
+                parts.Add($"Счётчик чипа {hwKwh:0.00} кВт·ч");
+            return parts.Count == 0 ? string.Empty : " · " + string.Join(" · ", parts);
+        }
+    }
 
     public string SharesText
     {

@@ -39,6 +39,7 @@ public partial class MainWindow : Window
             new UpdateService(_updateHttpClient),
             _nvidiaSmi,
             new TelegramAlertService(_telegramHttpClient),
+            new PoolPingService(),
             config);
         _viewModel.InstallerDownloaded += LaunchDownloadedInstaller;
         _viewModel.TrayStatusChanged += (text, state) => _trayService?.UpdateStatus(text, state);
@@ -56,9 +57,8 @@ public partial class MainWindow : Window
             preset => _viewModel.ApplyPresetFromTray(preset),
             () => Application.Current.Shutdown());
         _trayService.Initialize();
-        _viewModel.Start();
-        if (Environment.GetCommandLineArgs().Any(arg => string.Equals(arg, "--auto-mine", StringComparison.OrdinalIgnoreCase)))
-            _viewModel.StartMinerCommand.Execute(null);
+        var autoMineArg = Environment.GetCommandLineArgs().Any(arg => string.Equals(arg, "--auto-mine", StringComparison.OrdinalIgnoreCase));
+        _viewModel.Start(autoMineArg);
     }
 
     private void Window_StateChanged(object? sender, EventArgs e)

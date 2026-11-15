@@ -12,14 +12,14 @@ public sealed class PoolEarningsClient(HttpClient httpClient)
     private const string PoolApi = "https://pool.kryptex.com/prl/api/v1/miner/";
     private const string PriceApi = "https://pool.kryptex.com/api/v1/coin/prl/price/chart";
     private const string CbrApi = "https://www.cbr.ru/scripts/XML_daily.asp";
-    private static readonly Regex WalletPattern = new(@"^prl1p[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex WalletPattern = new(@"^(?:prl1p[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}|prl1q[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{37,39})$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     private readonly HttpClient _httpClient = httpClient;
 
     public static bool IsValidWallet(string? value) => value is not null && WalletPattern.IsMatch(value.Trim());
 
     public async Task<PoolEarningsSnapshot> ReadAsync(string wallet, CancellationToken cancellationToken)
     {
-        wallet = wallet.Trim();
+        wallet = wallet.Trim().ToLowerInvariant();
         if (!IsValidWallet(wallet))
             return Empty("Сохраните корректный публичный адрес PRL, чтобы получить баланс из Kryptex.");
 
@@ -91,8 +91,6 @@ public sealed class PoolEarningsClient(HttpClient httpClient)
         {
             using var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode) return new(null, null, $"HTTP {(int)response.StatusCode}");
-            // Parse the XML from bytes so a malformed/unsupported HTTP charset header
-            // cannot prevent us reading the ASCII XML tags and numeric exchange rate.
             var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
             return new(null, System.Text.Encoding.UTF8.GetString(bytes), null);
         }

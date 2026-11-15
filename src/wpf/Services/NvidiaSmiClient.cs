@@ -23,13 +23,18 @@ public sealed record NvidiaGpuReading(
     double? DefaultPowerLimitWatts = null,
     string? ThrottleReasons = null,
     string? PcieLink = null,
+    string? PState = null,
+    double? CoreUtilizationPercent = null,
+    double? MemoryUtilizationPercent = null,
+    double? EnforcedPowerLimitWatts = null,
+    double? HardwareEnergyKwh = null,
     string Source = "nvidia-smi");
 
 public sealed record NvidiaReadResult(bool Available, string Message, IReadOnlyList<NvidiaGpuReading> Gpus);
 
 public sealed class NvidiaSmiClient
 {
-    private const string Query = "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory,power.limit,power.min_limit,power.max_limit,power.default_limit --format=csv,noheader,nounits";
+    private const string Query = "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory,power.limit,power.min_limit,power.max_limit,power.default_limit,pstate,utilization.gpu,utilization.memory --format=csv,noheader,nounits";
     private readonly object _inventoryLock = new();
     private DateTimeOffset _inventoryFetchedAt;
     private NvidiaReadResult? _inventoryCache;
@@ -48,6 +53,7 @@ public sealed class NvidiaSmiClient
             var queries = new[]
             {
                 Query,
+                "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory,power.limit,power.min_limit,power.max_limit,power.default_limit --format=csv,noheader,nounits",
                 "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,clocks.current.graphics,clocks.current.memory --format=csv,noheader,nounits",
                 "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw --format=csv,noheader,nounits",
                 "--query-gpu=index,name,pci.bus_id --format=csv,noheader,nounits"
@@ -270,7 +276,10 @@ public sealed class NvidiaSmiClient
             fields.Length >= 12 ? ParseNumber(fields[8]) : null,
             fields.Length >= 12 ? ParseNumber(fields[9]) : null,
             fields.Length >= 12 ? ParseNumber(fields[10]) : null,
-            fields.Length >= 12 ? ParseNumber(fields[11]) : null);
+            fields.Length >= 12 ? ParseNumber(fields[11]) : null,
+            PState: fields.Length >= 15 && !string.IsNullOrWhiteSpace(fields[12]) ? fields[12] : null,
+            CoreUtilizationPercent: fields.Length >= 15 ? ParseNumber(fields[13]) : null,
+            MemoryUtilizationPercent: fields.Length >= 15 ? ParseNumber(fields[14]) : null);
     }
 
     private static int? ParseBusId(string value)
@@ -284,7 +293,7 @@ public sealed class NvidiaSmiClient
 
     private sealed record ProcessResult(int ExitCode, string Output, string Error);
 
-    /// <summary>Direct native NVML reader and controller (<0.2 ms overhead, zero child processes, reads GDDR6X VRAM temp, PCIe link, and throttle bitmask).</summary>
+    /// <summary>Direct native NVML reader and controller (<0.2 ms overhead, zero child processes, reads GDDR6X VRAM temp, PCIe link, P-State, utilization, enforced power limit, hardware energy counter, and throttle bitmask).</summary>
     private static class NvmlNativeReader
     {
         private const uint NvmlTemperatureGpu = 0;
@@ -308,6 +317,13 @@ public sealed class NvidiaSmiClient
             public uint pciSubSystemId;
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
             public string busId;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NvmlUtilization
+        {
+            public uint gpu;
+            public uint memory;
         }
 
         [StructLayout(LayoutKind.Explicit, Size = 16)]
@@ -356,6 +372,9 @@ public sealed class NvidiaSmiClient
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerManagementLimit", ExactSpelling = true)]
         private static extern int nvmlDeviceGetPowerManagementLimit(IntPtr device, out uint limitMilliwatts);
 
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetEnforcedPowerLimit", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetEnforcedPowerLimit(IntPtr device, out uint limitMilliwatts);
+
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceSetPowerManagementLimit", ExactSpelling = true)]
         private static extern int nvmlDeviceSetPowerManagementLimit(IntPtr device, uint limitMilliwatts);
 
@@ -365,6 +384,9 @@ public sealed class NvidiaSmiClient
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerManagementDefaultLimit", ExactSpelling = true)]
         private static extern int nvmlDeviceGetPowerManagementDefaultLimit(IntPtr device, out uint defaultLimitMilliwatts);
 
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetTotalEnergyConsumption", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetTotalEnergyConsumption(IntPtr device, out ulong energyMillijoules);
+
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetFanSpeed", ExactSpelling = true)]
         private static extern int nvmlDeviceGetFanSpeed(IntPtr device, out uint speed);
 
@@ -373,6 +395,12 @@ public sealed class NvidiaSmiClient
 
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetClockInfo", ExactSpelling = true)]
         private static extern int nvmlDeviceGetClockInfo(IntPtr device, uint type, out uint clockMhz);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPerformanceState", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPerformanceState(IntPtr device, out uint pState);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetUtilizationRates", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetUtilizationRates(IntPtr device, out NvmlUtilization utilization);
 
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCurrentClocksThrottleReasons", ExactSpelling = true)]
         private static extern int nvmlDeviceGetCurrentClocksThrottleReasons(IntPtr device, out ulong clocksThrottleReasons);
@@ -481,6 +509,7 @@ public sealed class NvidiaSmiClient
                         double? tempC = nvmlDeviceGetTemperature(handle, NvmlTemperatureGpu, out var t) == 0 && t < 200 ? t : null;
                         double? powerW = nvmlDeviceGetPowerUsage(handle, out var mw) == 0 ? Math.Round(mw / 1000d, 1) : null;
                         double? limitW = nvmlDeviceGetPowerManagementLimit(handle, out var limitMw) == 0 ? Math.Round(limitMw / 1000d, 1) : null;
+                        double? enforcedW = nvmlDeviceGetEnforcedPowerLimit(handle, out var enfMw) == 0 ? Math.Round(enfMw / 1000d, 1) : null;
                         double? minLimitW = null;
                         double? maxLimitW = null;
                         if (nvmlDeviceGetPowerManagementLimitConstraints(handle, out var minMw, out var maxMw) == 0)
@@ -493,6 +522,17 @@ public sealed class NvidiaSmiClient
                         double? cclk = nvmlDeviceGetClockInfo(handle, NvmlClockGraphics, out var gClk) == 0 ? gClk : null;
                         double? mclk = nvmlDeviceGetClockInfo(handle, NvmlClockMem, out var mClk) == 0 ? mClk : null;
                         double? vramTempC = TryReadMemoryTemp(handle);
+                        string? pState = nvmlDeviceGetPerformanceState(handle, out var ps) == 0 && ps <= 15 ? $"P{ps}" : null;
+                        double? coreUtil = null;
+                        double? memUtil = null;
+                        if (nvmlDeviceGetUtilizationRates(handle, out var util) == 0)
+                        {
+                            if (util.gpu <= 100) coreUtil = util.gpu;
+                            if (util.memory <= 100) memUtil = util.memory;
+                        }
+                        double? hwEnergyKwh = nvmlDeviceGetTotalEnergyConsumption(handle, out var totalMj) == 0 && totalMj > 0
+                            ? Math.Round(totalMj / 3_600_000_000d, 3)
+                            : null;
                         string? throttle = nvmlDeviceGetCurrentClocksThrottleReasons(handle, out var mask) == 0
                             ? FormatThrottleMask(mask)
                             : null;
@@ -516,6 +556,11 @@ public sealed class NvidiaSmiClient
                             defaultLimitW,
                             throttle,
                             pcieLink,
+                            pState,
+                            coreUtil,
+                            memUtil,
+                            enforcedW,
+                            hwEnergyKwh,
                             "nvml"));
                     }
 

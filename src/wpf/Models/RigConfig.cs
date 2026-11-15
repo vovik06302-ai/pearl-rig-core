@@ -7,7 +7,7 @@ namespace PearlRigCore.Models;
 /// </summary>
 public sealed record RigConfig
 {
-    public int SchemaVersion { get; init; } = 6;
+    public int SchemaVersion { get; init; } = 7;
     public int ApiPort { get; init; } = 3001;
     public int AgentBridgePort { get; init; } = 3002;
     public string WorkerName { get; init; } = CreateWorkerName();
@@ -21,6 +21,8 @@ public sealed record RigConfig
     public string Fan { get; init; } = string.Empty;
     public string ActivePreset { get; init; } = "Auto";
     public bool AutoStartMining { get; init; }
+    public bool ResumeMiningAfterReboot { get; init; } = true;
+    public bool LastKnownMiningActive { get; init; }
     public bool WatchdogEnabled { get; init; } = true;
     public bool SmartFanCurveEnabled { get; init; }
     public bool PreventSleepWhenMining { get; init; } = true;
@@ -29,10 +31,32 @@ public sealed record RigConfig
     public int CriticalStopTempC { get; init; } = 86;
     public int ResumeTempC { get; init; } = 65;
     public double ElectricityRateRubPerKwh { get; init; } = 5.50;
+    public double NightElectricityRateRubPerKwh { get; init; } = 2.90;
+    public bool DualTariffEnabled { get; init; }
+    public int DayTariffStartHour { get; init; } = 7;
+    public int NightTariffStartHour { get; init; } = 23;
+    public bool NightScheduleEnabled { get; init; }
+    public string DaySchedulePreset { get; init; } = "Eco";
+    public string NightSchedulePreset { get; init; } = "Balance";
     public bool TelegramEnabled { get; init; }
+    public bool TelegramRemoteControlEnabled { get; init; } = true;
     public string TelegramBotToken { get; init; } = string.Empty;
     public string TelegramChatId { get; init; } = string.Empty;
     public bool MinimizeToTray { get; init; } = true;
+
+    public bool IsNightTariffWindow(DateTime localTime)
+    {
+        var hour = localTime.Hour;
+        if (NightTariffStartHour == DayTariffStartHour) return false;
+        return NightTariffStartHour > DayTariffStartHour
+            ? hour >= NightTariffStartHour || hour < DayTariffStartHour
+            : hour >= NightTariffStartHour && hour < DayTariffStartHour;
+    }
+
+    public double GetActiveElectricityTariff(DateTime localTime) =>
+        DualTariffEnabled && IsNightTariffWindow(localTime)
+            ? NightElectricityRateRubPerKwh
+            : ElectricityRateRubPerKwh;
 
     public static RigConfig Load()
     {
@@ -79,7 +103,7 @@ public sealed record RigConfig
         var migrated = config.SchemaVersion < 4
             ? config with
             {
-                SchemaVersion = 6,
+                SchemaVersion = 7,
                 WorkerName = worker,
                 CoreClock = config.CoreClock == "2400,2400" ? string.Empty : config.CoreClock,
                 MemoryClock = config.MemoryClock == "810,810" ? string.Empty : config.MemoryClock,
@@ -87,7 +111,7 @@ public sealed record RigConfig
                 Kernel = config.Kernel == "2,2" ? string.Empty : config.Kernel,
                 Fan = config.Fan == "65,*" ? string.Empty : config.Fan
             }
-            : config with { SchemaVersion = 6, WorkerName = worker };
+            : config with { SchemaVersion = 7, WorkerName = worker };
 
         return migrated with
         {
@@ -95,7 +119,12 @@ public sealed record RigConfig
             WarningTempC = migrated.WarningTempC is >= 60 and <= 95 ? migrated.WarningTempC : 82,
             CriticalStopTempC = migrated.CriticalStopTempC is >= 65 and <= 100 ? migrated.CriticalStopTempC : 86,
             ResumeTempC = migrated.ResumeTempC is >= 45 and <= 80 ? migrated.ResumeTempC : 65,
-            ElectricityRateRubPerKwh = migrated.ElectricityRateRubPerKwh is >= 0 and <= 100 ? migrated.ElectricityRateRubPerKwh : 5.50
+            ElectricityRateRubPerKwh = migrated.ElectricityRateRubPerKwh is >= 0 and <= 100 ? migrated.ElectricityRateRubPerKwh : 5.50,
+            NightElectricityRateRubPerKwh = migrated.NightElectricityRateRubPerKwh is >= 0 and <= 100 ? migrated.NightElectricityRateRubPerKwh : 2.90,
+            DayTariffStartHour = migrated.DayTariffStartHour is >= 0 and <= 23 ? migrated.DayTariffStartHour : 7,
+            NightTariffStartHour = migrated.NightTariffStartHour is >= 0 and <= 23 ? migrated.NightTariffStartHour : 23,
+            DaySchedulePreset = string.IsNullOrWhiteSpace(migrated.DaySchedulePreset) ? "Eco" : migrated.DaySchedulePreset,
+            NightSchedulePreset = string.IsNullOrWhiteSpace(migrated.NightSchedulePreset) ? "Balance" : migrated.NightSchedulePreset
         };
     }
 

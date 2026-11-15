@@ -18,6 +18,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly UpdateService _updateService;
     private readonly NvidiaSmiClient _nvidiaSmi;
     private readonly TelegramAlertService _telegramService;
+    private readonly PoolPingService _poolPingService;
     private readonly Dictionary<int, List<double>> _gpuHashrateBuffers = [];
     private readonly Dictionary<int, List<double>> _gpuTempBuffers = [];
     private readonly Dictionary<int, int> _lastSmartFanApplied = [];
@@ -28,17 +29,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly DispatcherTimer _timer;
     private CancellationTokenSource? _lifetime;
     private DateTimeOffset _lastEarningsRead = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastPoolPingAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastTelegramPollAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastCsvSnapshotAt = DateTimeOffset.MinValue;
     private DateTimeOffset? _lastEnergySampleAt;
     private DateTimeOffset? _sessionFirstBalanceAt;
     private double? _sessionFirstBalancePrl;
     private double? _lastKnownPaidPrl;
+    private double? _lastKnownTotalPrl;
+    private double? _lastKnownPrlRubRate;
     private double? _lastObservedGrossRubPerDay;
+    private double? _lastObservedNetRubPerDay;
+    private double? _lastTotalHashrateTHs;
+    private double? _lastTotalPowerWatts;
+    private double? _lastEfficiencyGhPerWatt;
     private double _sessionEnergyKwh;
+    private double _sessionElectricityCostRub;
     private DateTimeOffset? _minerStartedOrObservedAt;
     private DateTimeOffset? _zeroHashrateSince;
     private DateTimeOffset _lastThermalWarningAt = DateTimeOffset.MinValue;
     private bool _userManuallyStopped;
     private bool _thermalPaused;
+    private bool _isAutoTuning;
+    private string? _lastScheduledWindowApplied;
     private int _watchdogRestartCount;
     private string _walletAddress;
     private bool _isRefreshing;
@@ -49,6 +62,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _hardwareStatus = "Ожидание датчиков";
     private string _poolStatus = "Нет данных";
     private string _poolUrl = "Адрес пула недоступен";
+    private string _poolPingText = "Пинг RU: — · EU: —";
     private string _totalHashrate = "Нет данных";
     private string _totalEfficiency = "Энергоэффективность: — GH/W · Потребление: — Вт";
     private string _electricitySummaryText = "Электроэнергия: 0.000 кВт·ч (0.00 ₽) · Сутки: — ₽";
@@ -77,6 +91,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _autoStartMining;
     private bool _watchdogEnabled;
     private bool _smartFanCurveEnabled;
+    private bool _dualTariffEnabled;
+    private bool _nightScheduleEnabled;
     private string _activePreset;
     private string _watchdogStatusText = "Watchdog и термозащита активны";
     private string _watchdogEventsText = "Журнал защиты запущен. Аварийных событий нет.";
@@ -90,7 +106,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _kernelDraft;
     private string _fanDraft;
     private string _electricityRateDraft;
+    private string _nightElectricityRateDraft;
     private bool _telegramEnabled;
+    private bool _telegramRemoteControlEnabled;
     private string _telegramBotTokenDraft;
     private string _telegramChatIdDraft;
     private string _telegramStatusText = "Уведомления Telegram не настроены";
@@ -115,6 +133,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         UpdateService updateService,
         NvidiaSmiClient nvidiaSmi,
         TelegramAlertService telegramService,
+        PoolPingService poolPingService,
         RigConfig config)
     {
         _telemetry = telemetry;
@@ -123,11 +142,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _updateService = updateService;
         _nvidiaSmi = nvidiaSmi;
         _telegramService = telegramService;
+        _poolPingService = poolPingService;
         _config = config;
-        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 6, 0);
-        _autoStartMining = config.AutoStartMining;
+        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 7, 1);
+        _autoStartMining = config.AutoStartMining || MinerControlService.IsAutoStartTaskRegistered();
         _watchdogEnabled = config.WatchdogEnabled;
         _smartFanCurveEnabled = config.SmartFanCurveEnabled;
+        _dualTariffEnabled = config.DualTariffEnabled;
+        _nightScheduleEnabled = config.NightScheduleEnabled;
         _activePreset = string.IsNullOrWhiteSpace(config.ActivePreset) ? "Auto" : config.ActivePreset;
         _workerNameDraft = config.WorkerName;
         _coreClockDraft = SettingDraft(config.CoreClock);
@@ -136,29 +158,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _kernelDraft = SettingDraft(config.Kernel);
         _fanDraft = SettingDraft(config.Fan);
         _electricityRateDraft = config.ElectricityRateRubPerKwh.ToString("0.00", CultureInfo.InvariantCulture);
+        _nightElectricityRateDraft = config.NightElectricityRateRubPerKwh.ToString("0.00", CultureInfo.InvariantCulture);
         _telegramEnabled = config.TelegramEnabled;
+        _telegramRemoteControlEnabled = config.TelegramRemoteControlEnabled;
         _telegramBotTokenDraft = config.TelegramBotToken;
         _telegramChatIdDraft = config.TelegramChatId;
         _telegramStatusText = _telegramEnabled && !string.IsNullOrWhiteSpace(_telegramBotTokenDraft) && !string.IsNullOrWhiteSpace(_telegramChatIdDraft)
-            ? "Telegram-уведомления активны"
-            : "Введите токен бота и Chat ID для алертов";
+            ? (_telegramRemoteControlEnabled ? "Telegram: алерты и команды (/status, /preset) активны" : "Telegram-уведомления активны")
+            : "Введите токен бота и Chat ID для алертов и управления";
         _walletAddress = config.WalletAddress;
         _walletAddressDraft = config.WalletAddress;
         _walletStatus = PoolEarningsClient.IsValidWallet(config.WalletAddress) ? "Адрес выплат загружен из локального профиля" : "Введите публичный адрес PRL";
-        _minerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft);
+        _minerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
 
         SaveWalletCommand = new RelayCommand(() => _ = SaveWalletAsync(), () => PoolEarningsClient.IsValidWallet(WalletAddressDraft));
         RefreshCommand = new RelayCommand(() => _ = RefreshAsync(force: true));
-        StartMinerCommand = new RelayCommand(() => _ = StartMinerAsync(manual: true), () => !_isMinerBusy && !_minerControl.IsRunning);
-        StopMinerCommand = new RelayCommand(() => _ = StopMinerAsync(manual: true), () => !_isMinerBusy && _minerControl.IsRunning);
+        StartMinerCommand = new RelayCommand(() => _ = StartMinerAsync(manual: true), () => !_isMinerBusy && !_isAutoTuning && !_minerControl.IsRunning);
+        StopMinerCommand = new RelayCommand(() => _ = StopMinerAsync(manual: true), () => !_isMinerBusy && !_isAutoTuning && _minerControl.IsRunning);
         ToggleMinerModeCommand = new RelayCommand(() => _ = ToggleMinerModeAsync(), () => !_isMinerBusy);
         ToggleWatchdogCommand = new RelayCommand(() => _ = ToggleWatchdogAsync(), () => !_isMinerBusy);
         ToggleSmartFanCurveCommand = new RelayCommand(() => _ = ToggleSmartFanCurveAsync(), () => !_isMinerBusy);
-        PresetAutoCommand = new RelayCommand(() => ApplyPreset("Auto"), () => !_isMinerBusy);
-        PresetEcoCommand = new RelayCommand(() => ApplyPreset("Eco"), () => !_isMinerBusy);
-        PresetBalanceCommand = new RelayCommand(() => ApplyPreset("Balance"), () => !_isMinerBusy);
-        PresetTurboCommand = new RelayCommand(() => ApplyPreset("Turbo"), () => !_isMinerBusy);
-        PresetSilentCommand = new RelayCommand(() => ApplyPreset("Silent"), () => !_isMinerBusy);
+        ToggleDualTariffCommand = new RelayCommand(() => _ = ToggleDualTariffAsync(), () => !_isMinerBusy);
+        ToggleNightScheduleCommand = new RelayCommand(() => _ = ToggleNightScheduleAsync(), () => !_isMinerBusy);
+        RunAutoTuneBenchmarkCommand = new RelayCommand(() => _ = RunAutoTuneBenchmarkAsync(), () => !_isMinerBusy && !_isAutoTuning && _minerControl.IsRunning);
+        ExportCsvReportCommand = new RelayCommand(() => _ = ExportCsvReportAsync());
+        PresetAutoCommand = new RelayCommand(() => ApplyPreset("Auto"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetEcoCommand = new RelayCommand(() => ApplyPreset("Eco"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetBalanceCommand = new RelayCommand(() => ApplyPreset("Balance"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetTurboCommand = new RelayCommand(() => ApplyPreset("Turbo"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetSilentCommand = new RelayCommand(() => ApplyPreset("Silent"), () => !_isMinerBusy && !_isAutoTuning);
         SaveMinerSettingsCommand = new RelayCommand(() => _ = SaveMinerSettingsAsync(), CanSaveMinerSettings);
         SaveTelegramCommand = new RelayCommand(() => _ = SaveTelegramSettingsAsync());
         TestTelegramCommand = new RelayCommand(() => _ = TestTelegramAsync());
@@ -182,6 +210,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public RelayCommand ToggleMinerModeCommand { get; }
     public RelayCommand ToggleWatchdogCommand { get; }
     public RelayCommand ToggleSmartFanCurveCommand { get; }
+    public RelayCommand ToggleDualTariffCommand { get; }
+    public RelayCommand ToggleNightScheduleCommand { get; }
+    public RelayCommand RunAutoTuneBenchmarkCommand { get; }
+    public RelayCommand ExportCsvReportCommand { get; }
     public RelayCommand PresetAutoCommand { get; }
     public RelayCommand PresetEcoCommand { get; }
     public RelayCommand PresetBalanceCommand { get; }
@@ -201,6 +233,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string HardwareStatus { get => _hardwareStatus; private set => Set(ref _hardwareStatus, value); }
     public string PoolStatus { get => _poolStatus; private set => Set(ref _poolStatus, value); }
     public string PoolUrl { get => _poolUrl; private set => Set(ref _poolUrl, value); }
+    public string PoolPingText { get => _poolPingText; private set => Set(ref _poolPingText, value); }
     public string TotalHashrate { get => _totalHashrate; private set => Set(ref _totalHashrate, value); }
     public string TotalEfficiency { get => _totalEfficiency; private set => Set(ref _totalEfficiency, value); }
     public string ElectricitySummaryText { get => _electricitySummaryText; private set => Set(ref _electricitySummaryText, value); }
@@ -219,7 +252,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (!Set(ref _walletAddressDraft, value)) return;
             SaveWalletCommand.NotifyCanExecuteChanged();
-            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft);
+            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
         }
     }
 
@@ -245,6 +278,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string WatchdogButtonLabel => WatchdogEnabled ? "WATCHDOG: ВКЛ" : "WATCHDOG: ВЫКЛ";
     public bool SmartFanCurveEnabled { get => _smartFanCurveEnabled; private set { if (Set(ref _smartFanCurveEnabled, value)) OnPropertyChanged(nameof(SmartFanButtonLabel)); } }
     public string SmartFanButtonLabel => SmartFanCurveEnabled ? "АВТО-КУЛЕРЫ: ВКЛ" : "АВТО-КУЛЕРЫ: ВЫКЛ";
+    public bool DualTariffEnabled { get => _dualTariffEnabled; private set { if (Set(ref _dualTariffEnabled, value)) OnPropertyChanged(nameof(DualTariffButtonLabel)); } }
+    public string DualTariffButtonLabel => DualTariffEnabled ? "ТАРИФ: ДЕНЬ/НОЧЬ" : "ТАРИФ: ЕДИНЫЙ";
+    public bool NightScheduleEnabled { get => _nightScheduleEnabled; private set { if (Set(ref _nightScheduleEnabled, value)) OnPropertyChanged(nameof(NightScheduleButtonLabel)); } }
+    public string NightScheduleButtonLabel => NightScheduleEnabled ? "РАСПИСАНИЕ: ВКЛ" : "РАСПИСАНИЕ: ВЫКЛ";
+    public string AutoTuneButtonLabel => _isAutoTuning ? "АВТО-ПОДБОР…" : "АВТО-ПОДБОР GH/W";
     public string ActivePreset { get => _activePreset; private set { if (Set(ref _activePreset, value)) OnPropertyChanged(nameof(ActivePresetLabel)); } }
     public string ActivePresetLabel => $"ПРОФИЛЬ: {_activePreset.ToUpperInvariant()}";
     public string WatchdogStatusText { get => _watchdogStatusText; private set => Set(ref _watchdogStatusText, value); }
@@ -275,7 +313,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var watts = Math.Clamp(value, PowerSliderMinimum, PowerSliderMaximum);
             if (!Set(ref _powerSliderValue, watts)) return;
             var valueText = Math.Round(watts).ToString(CultureInfo.InvariantCulture);
-            PowerLimitDraft = string.Join(',', Gpus.OrderBy(gpu => gpu.Id).Select(_ => valueText));
+            var count = Math.Max(2, Gpus.Count);
+            PowerLimitDraft = string.Join(',', Enumerable.Repeat(valueText, count));
         }
     }
 
@@ -286,7 +325,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string KernelDraft { get => _kernelDraft; set { if (Set(ref _kernelDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string FanDraft { get => _fanDraft; set { if (Set(ref _fanDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string ElectricityRateDraft { get => _electricityRateDraft; set { if (Set(ref _electricityRateDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
+    public string NightElectricityRateDraft { get => _nightElectricityRateDraft; set { if (Set(ref _nightElectricityRateDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public bool TelegramEnabled { get => _telegramEnabled; set => Set(ref _telegramEnabled, value); }
+    public bool TelegramRemoteControlEnabled { get => _telegramRemoteControlEnabled; set => Set(ref _telegramRemoteControlEnabled, value); }
     public string TelegramBotTokenDraft { get => _telegramBotTokenDraft; set => Set(ref _telegramBotTokenDraft, value); }
     public string TelegramChatIdDraft { get => _telegramChatIdDraft; set => Set(ref _telegramChatIdDraft, value); }
     public string TelegramStatusText { get => _telegramStatusText; private set => Set(ref _telegramStatusText, value); }
@@ -303,13 +344,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ? $"v{_installedVersion.ToString(3)} · {UpdateProgress:0}%"
         : _availableUpdate is not null ? $"v{_installedVersion.ToString(3)} · ОБНОВИТЬ" : $"v{_installedVersion.ToString(3)} · ПРОВЕРИТЬ";
 
-    public void Start()
+    public void Start(bool launchedWithAutoMineArg = false)
     {
         _lifetime = new CancellationTokenSource();
         _timer.Start();
         UpdateMinerState();
         _ = RefreshAsync();
         _ = CheckForUpdatesAsync();
+
+        var shouldResumeAfterReboot = _config.ResumeMiningAfterReboot && _config.LastKnownMiningActive && AutoStartMining;
+        if ((launchedWithAutoMineArg || shouldResumeAfterReboot) && !_minerControl.IsRunning && PoolEarningsClient.IsValidWallet(_walletAddress))
+        {
+            AppendWatchdogEvent("Автовосстановление сессии после загрузки Windows: запуск майнера.");
+            _ = StartMinerAsync(manual: false);
+        }
     }
 
     public void ApplyPresetFromTray(string presetName)
@@ -320,7 +368,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyPreset(string presetName)
     {
-        var count = Math.Max(1, Gpus.Count);
+        var count = Gpus.Count > 0 ? Gpus.Count : 2;
         string Repeat(string v) => string.Join(',', Enumerable.Repeat(v, count));
 
         int ClampPower(int desired)
@@ -371,8 +419,179 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         ActivePreset = presetName;
+        MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
         MinerControlStatus = $"Выбран пресет «{presetName}». Нажмите «СОХРАНИТЬ И ПРИМЕНИТЬ» для записи в драйвер.";
         AppendWatchdogEvent($"Подготовлен профиль разгона: {presetName}");
+    }
+
+    private async Task ToggleDualTariffAsync()
+    {
+        var enabled = !DualTariffEnabled;
+        _config = _config with { DualTariffEnabled = enabled };
+        await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+        DualTariffEnabled = enabled;
+        var msg = enabled
+            ? $"Включён двухтарифный учёт (День {_config.DayTariffStartHour:00}:00–{_config.NightTariffStartHour:00}:00 · Ночь {_config.NightTariffStartHour:00}:00–{_config.DayTariffStartHour:00}:00)"
+            : "Включён единый круглосуточный тариф электроэнергии";
+        MinerControlStatus = msg;
+        AppendWatchdogEvent(msg);
+    }
+
+    private async Task ToggleNightScheduleAsync()
+    {
+        var enabled = !NightScheduleEnabled;
+        _config = _config with { NightScheduleEnabled = enabled };
+        await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+        NightScheduleEnabled = enabled;
+        _lastScheduledWindowApplied = null;
+        var msg = enabled
+            ? $"Авто-расписание День/Ночь включено (День → {_config.DaySchedulePreset}, Ночь → {_config.NightSchedulePreset})"
+            : "Авто-расписание профилей День/Ночь отключено";
+        MinerControlStatus = msg;
+        AppendWatchdogEvent(msg);
+    }
+
+    private async Task EvaluateDayNightScheduleAsync()
+    {
+        if (!NightScheduleEnabled || _isMinerBusy || _isAutoTuning || Gpus.Count == 0) return;
+
+        var isNight = _config.IsNightTariffWindow(DateTime.Now);
+        var windowKey = isNight ? "Night" : "Day";
+        if (string.Equals(_lastScheduledWindowApplied, windowKey, StringComparison.Ordinal))
+            return;
+
+        _lastScheduledWindowApplied = windowKey;
+        var targetPreset = isNight ? _config.NightSchedulePreset : _config.DaySchedulePreset;
+        if (string.Equals(ActivePreset, targetPreset, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        ApplyPreset(targetPreset);
+        AppendWatchdogEvent($"Расписание {(isNight ? "НОЧЬ" : "ДЕНЬ")}: автоматический переход на профиль «{targetPreset}».");
+        await SaveMinerSettingsAsync();
+    }
+
+    private async Task RunAutoTuneBenchmarkAsync()
+    {
+        if (_isAutoTuning || _isMinerBusy || !_minerControl.IsRunning) return;
+        var nvidiaCount = Gpus.Count(IsNvidiaGpu);
+        if (nvidiaCount == 0)
+        {
+            MinerControlStatus = "Авто-подбор требует активные видеокарты NVIDIA и запущенный майнер.";
+            return;
+        }
+
+        _isAutoTuning = true;
+        OnPropertyChanged(nameof(AutoTuneButtonLabel));
+        UpdateMinerState();
+
+        var minW = (int)Math.Ceiling(PowerSliderMinimum);
+        var maxW = (int)Math.Floor(PowerSliderMaximum);
+        var candidates = new[] { 130, 140, 150, 165, 180 }
+            .Select(w => minW <= maxW ? Math.Clamp(w, minW, maxW) : w)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        AppendWatchdogEvent($"Старт авто-бенчмарка «Золотая точка» GH/W по ступеням: {string.Join(", ", candidates.Select(c => $"{c} Вт"))}");
+        var bestWatts = candidates[0];
+        var bestEfficiency = 0d;
+        var token = _lifetime?.Token ?? CancellationToken.None;
+
+        try
+        {
+            foreach (var candidateW in candidates)
+            {
+                var limitStr = string.Join(',', Enumerable.Repeat(candidateW.ToString(CultureInfo.InvariantCulture), Gpus.Count));
+                MinerControlStatus = $"Авто-подбор: проверка {candidateW} Вт (стабилизация 18 с)…";
+                await _nvidiaSmi.ApplyPowerLimitsAsync(limitStr, token);
+                await Task.Delay(TimeSpan.FromSeconds(18), token);
+
+                var snap = await _telemetry.ReadAsync(token);
+                Apply(snap);
+
+                var power = snap.Gpus.Where(g => g.PowerWatts is not null).Sum(g => g.PowerWatts!.Value);
+                var hashrate = snap.TotalHashrateTHs ?? 0;
+                var maxTemp = snap.Gpus.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty(0).Max();
+                var eff = hashrate > 0 && power > 0 ? (hashrate * 1000d) / power : 0;
+
+                var stepResult = $"Ступень {candidateW} Вт → {hashrate:0.00} TH/s · {power:0} Вт · {eff:0.00} GH/W · макс {maxTemp:0} °C";
+                AppendWatchdogEvent(stepResult);
+
+                if (eff > bestEfficiency && maxTemp < _config.WarningTempC)
+                {
+                    bestEfficiency = eff;
+                    bestWatts = candidateW;
+                }
+            }
+
+            PowerLimitDraft = string.Join(',', Enumerable.Repeat(bestWatts.ToString(CultureInfo.InvariantCulture), Gpus.Count));
+            ActivePreset = $"Tuned-{bestWatts}W";
+            await SaveMinerSettingsAsync();
+
+            var summary = $"Авто-бенчмарк завершён: выбрана золотая точка {bestWatts} Вт ({bestEfficiency:0.00} GH/W).";
+            MinerControlStatus = summary;
+            AppendWatchdogEvent(summary);
+            await RecordCsvSnapshotAsync(summary);
+            await SendTelegramAlertIfEnabledAsync($"🏆 {summary}");
+        }
+        catch (OperationCanceledException)
+        {
+            MinerControlStatus = "Авто-подбор энергоэффективности отменён.";
+        }
+        catch (Exception ex)
+        {
+            MinerControlStatus = $"Ошибка авто-подбора: {ex.Message}";
+            AppendWatchdogEvent($"Авто-бенчмарк прерван: {ex.Message}");
+        }
+        finally
+        {
+            _isAutoTuning = false;
+            OnPropertyChanged(nameof(AutoTuneButtonLabel));
+            UpdateMinerState();
+        }
+    }
+
+    private async Task ExportCsvReportAsync()
+    {
+        try
+        {
+            await RecordCsvSnapshotAsync("Ручная выгрузка отчёта CSV пользователем");
+            TelemetryHistoryCsvService.RevealInExplorer();
+            MinerControlStatus = $"Отчёт CSV сохранён: {TelemetryHistoryCsvService.GetCsvFilePath()}";
+        }
+        catch (Exception ex)
+        {
+            MinerControlStatus = $"Не удалось выгрузить CSV: {ex.Message}";
+        }
+    }
+
+    private async Task RecordCsvSnapshotAsync(string eventNote)
+    {
+        try
+        {
+            var maxCore = Gpus.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty().Max();
+            var maxVram = Gpus.Where(g => g.VramTempC is not null).Select(g => g.VramTempC!.Value).DefaultIfEmpty().Max();
+            var entry = new CsvHistoryEntry(
+                DateTimeOffset.Now,
+                _lastTotalHashrateTHs,
+                _lastTotalPowerWatts,
+                _lastEfficiencyGhPerWatt,
+                maxCore > 0 ? maxCore : null,
+                maxVram > 0 ? maxVram : null,
+                _sessionEnergyKwh,
+                _config.GetActiveElectricityTariff(DateTime.Now),
+                _lastKnownTotalPrl,
+                _lastKnownPaidPrl,
+                _lastKnownPrlRubRate,
+                _lastObservedNetRubPerDay,
+                eventNote);
+            await TelemetryHistoryCsvService.AppendEntryAsync(entry, _lifetime?.Token ?? CancellationToken.None);
+            _lastCsvSnapshotAt = DateTimeOffset.UtcNow;
+        }
+        catch
+        {
+            // Non-critical disk logging.
+        }
     }
 
     private void CopyCommandLineToClipboard()
@@ -392,18 +611,104 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
         _watchdogEvents.Add(line);
-        if (_watchdogEvents.Count > 30)
+        if (_watchdogEvents.Count > 35)
             _watchdogEvents.RemoveAt(0);
         WatchdogEventsText = string.Join(Environment.NewLine, Enumerable.Reverse(_watchdogEvents));
     }
 
-    private async Task SendTelegramAlertIfEnabledAsync(string message)
+    private async Task SendTelegramAlertIfEnabledAsync(string message, bool bypassCooldown = false)
     {
         if (!TelegramEnabled || string.IsNullOrWhiteSpace(TelegramBotTokenDraft) || string.IsNullOrWhiteSpace(TelegramChatIdDraft))
             return;
-        var (ok, status) = await _telegramService.SendAsync(TelegramBotTokenDraft, TelegramChatIdDraft, message, bypassCooldown: false, _lifetime?.Token ?? CancellationToken.None);
+        var (ok, status) = await _telegramService.SendAsync(TelegramBotTokenDraft, TelegramChatIdDraft, message, bypassCooldown, _lifetime?.Token ?? CancellationToken.None);
         TelegramStatusText = status;
         if (!ok) AppendWatchdogEvent($"Telegram: {status}");
+    }
+
+    private async Task PollTelegramRemoteCommandsAsync()
+    {
+        if (!TelegramEnabled || !TelegramRemoteControlEnabled || string.IsNullOrWhiteSpace(TelegramBotTokenDraft) || string.IsNullOrWhiteSpace(TelegramChatIdDraft))
+            return;
+        if (DateTimeOffset.UtcNow - _lastTelegramPollAt < TimeSpan.FromSeconds(6))
+            return;
+
+        _lastTelegramPollAt = DateTimeOffset.UtcNow;
+        var token = _lifetime?.Token ?? CancellationToken.None;
+        var commands = await _telegramService.PollAuthorizedCommandsAsync(TelegramBotTokenDraft, TelegramChatIdDraft, token);
+        foreach (var rawCmd in commands)
+        {
+            var normalized = rawCmd.Trim().ToLowerInvariant();
+            var atIdx = normalized.IndexOf('@');
+            if (atIdx > 0) normalized = normalized[..atIdx];
+
+            AppendWatchdogEvent($"Telegram-команда: {rawCmd}");
+            switch (normalized)
+            {
+                case "/status":
+                    var gpuSummary = Gpus.Count == 0
+                        ? "GPU не обнаружены"
+                        : string.Join("\n", Gpus.Select(g => $"• GPU#{g.Id}: {g.HashrateText} | {g.TemperatureText} (GDDR6X {g.VramTemperatureText}) | {g.PowerText} | {g.PState ?? "P?"}"));
+                    var reply =
+                        $"📊 Статус фермы ({ActivePresetLabel})\n" +
+                        $"Хешрейт: {TotalHashrate} ({TotalEfficiency})\n" +
+                        $"{gpuSummary}\n" +
+                        $"Пул: {PoolStatus} ({PoolPingText})\n" +
+                        $"Баланс: {PoolBalance} ({PoolRubEstimate})\n" +
+                        $"{NetProfitSummaryText}";
+                    await SendTelegramAlertIfEnabledAsync(reply, bypassCooldown: true);
+                    break;
+
+                case "/start_miner":
+                    await StartMinerAsync(manual: true);
+                    await SendTelegramAlertIfEnabledAsync("▶️ Команда /start_miner выполнена: запуск OneZeroMiner.", bypassCooldown: true);
+                    break;
+
+                case "/stop_miner":
+                    await StopMinerAsync(manual: true);
+                    await SendTelegramAlertIfEnabledAsync("⏹ Команда /stop_miner выполнена: OneZeroMiner остановлен.", bypassCooldown: true);
+                    break;
+
+                case "/reboot_miner":
+                    await StopMinerAsync(manual: false);
+                    await Task.Delay(1500, token);
+                    await StartMinerAsync(manual: true);
+                    await SendTelegramAlertIfEnabledAsync("🔄 Команда /reboot_miner выполнена: майнер перезапущен.", bypassCooldown: true);
+                    break;
+
+                case "/preset eco":
+                case "/eco":
+                    ApplyPreset("Eco");
+                    await SaveMinerSettingsAsync();
+                    await SendTelegramAlertIfEnabledAsync("🌱 Профиль переключён на ECO.", bypassCooldown: true);
+                    break;
+
+                case "/preset balance":
+                case "/balance":
+                    ApplyPreset("Balance");
+                    await SaveMinerSettingsAsync();
+                    await SendTelegramAlertIfEnabledAsync("⚖️ Профиль переключён на BALANCE.", bypassCooldown: true);
+                    break;
+
+                case "/preset turbo":
+                case "/turbo":
+                    ApplyPreset("Turbo");
+                    await SaveMinerSettingsAsync();
+                    await SendTelegramAlertIfEnabledAsync("🚀 Профиль переключён на TURBO.", bypassCooldown: true);
+                    break;
+
+                case "/preset silent":
+                case "/silent":
+                    ApplyPreset("Silent");
+                    await SaveMinerSettingsAsync();
+                    await SendTelegramAlertIfEnabledAsync("🌙 Профиль переключён на SILENT.", bypassCooldown: true);
+                    break;
+
+                case "/autotune":
+                    _ = RunAutoTuneBenchmarkAsync();
+                    await SendTelegramAlertIfEnabledAsync("🔬 Запущен авто-подбор золотой точки GH/W.", bypassCooldown: true);
+                    break;
+            }
+        }
     }
 
     private async Task SaveTelegramSettingsAsync()
@@ -414,12 +719,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _config = _config with
             {
                 TelegramEnabled = TelegramEnabled,
+                TelegramRemoteControlEnabled = TelegramRemoteControlEnabled,
                 TelegramBotToken = TelegramBotTokenDraft.Trim(),
                 TelegramChatId = TelegramChatIdDraft.Trim()
             };
             await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             TelegramStatusText = TelegramEnabled
-                ? "Настройки Telegram сохранены в локальном профиле"
+                ? (TelegramRemoteControlEnabled
+                    ? "Telegram сохранён (уведомления и команды /status, /preset, /start_miner активны)"
+                    : "Настройки Telegram сохранены в локальном профиле")
                 : "Настройки сохранены (отправка отключена)";
         }
         catch (Exception ex)
@@ -431,7 +739,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task TestTelegramAsync()
     {
         await SaveTelegramSettingsAsync();
-        var summary = $"Тестовое уведомление.\nХешрейт: {TotalHashrate}\nПул: {PoolStatus}\nБаланс: {PoolBalance} ({PoolRubEstimate})";
+        var summary = $"Тестовое уведомление.\nХешрейт: {TotalHashrate}\nПул: {PoolStatus} ({PoolPingText})\nБаланс: {PoolBalance} ({PoolRubEstimate})\nДоступные команды: /status, /start_miner, /stop_miner, /reboot_miner, /eco, /balance, /turbo, /autotune";
         var (_, status) = await _telegramService.SendAsync(TelegramBotTokenDraft, TelegramChatIdDraft, summary, bypassCooldown: true, _lifetime?.Token ?? CancellationToken.None);
         TelegramStatusText = status;
     }
@@ -564,16 +872,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 throw new InvalidOperationException($"Обнаружены {names}. PearlHash в OneZeroMiner поддерживает только видеокарты NVIDIA.");
             }
 
-            var wallet = WalletAddressDraft.Trim();
+            var wallet = WalletAddressDraft.Trim().ToLowerInvariant();
             if (!PoolEarningsClient.IsValidWallet(wallet))
-                throw new InvalidOperationException("Сначала введите и сохраните корректный адрес PRL.");
-            if (!string.Equals(wallet, _config.WalletAddress, StringComparison.Ordinal))
+                throw new InvalidOperationException("Сначала введите и сохраните корректный адрес PRL (prl1p... или prl1q...).");
+            if (!string.Equals(wallet, _config.WalletAddress, StringComparison.OrdinalIgnoreCase))
             {
                 await RigConfig.SaveWalletAsync(wallet, _lifetime?.Token ?? CancellationToken.None);
                 WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
             }
-            await _minerControl.StartAsync(wallet, _lifetime?.Token ?? CancellationToken.None);
+
+            var gpuCount = nvidiaGpus.Length > 0 ? nvidiaGpus.Length : 2;
+            await _minerControl.StartAsync(wallet, gpuCount, _lifetime?.Token ?? CancellationToken.None);
             WindowsDiagnosticsService.SetMiningSleepPrevention(_config.PreventSleepWhenMining);
+            _config = _config with { LastKnownMiningActive = true };
+            await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             _minerStartedOrObservedAt = DateTimeOffset.UtcNow;
             _zeroHashrateSince = null;
             var unsupported = detectedGpus.Where(gpu => !IsNvidiaGpu(gpu)).Select(gpu => gpu.Name).ToArray();
@@ -611,6 +923,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await _minerControl.StopAsync(_lifetime?.Token ?? CancellationToken.None);
             WindowsDiagnosticsService.SetMiningSleepPrevention(false);
+            if (manual)
+            {
+                _config = _config with { LastKnownMiningActive = false };
+                await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+            }
             _minerStartedOrObservedAt = null;
             _zeroHashrateSince = null;
             MinerControlStatus = "Майнер остановлен штатно";
@@ -626,7 +943,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (!TryBeginMinerAction()) return;
         var enabled = !AutoStartMining;
-        MinerControlStatus = enabled ? "Настройка запуска с Windows…" : "Отключение запуска с Windows…";
+        MinerControlStatus = enabled ? "Регистрация задачи в Планировщике Windows (с правами администратора)…" : "Удаление задачи автозапуска из Планировщика Windows…";
         try
         {
             await _minerControl.SetAutoStartAsync(enabled, _lifetime?.Token ?? CancellationToken.None);
@@ -634,8 +951,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             AutoStartMining = enabled;
             MinerControlStatus = enabled
-                ? "Автозапуск включён: майнер стартует при входе в Windows"
-                : "Ручной режим: майнер запускается только кнопкой";
+                ? "Автозапуск с Windows включён (Планировщик задач /RL HIGHEST + автовозврат майнинга)"
+                : "Ручной режим: автозапуск с Windows отключён";
+            AppendWatchdogEvent(MinerControlStatus);
         }
         catch (OperationCanceledException) { MinerControlStatus = "Изменение режима отменено"; }
         catch (Exception ex) { MinerControlStatus = $"Режим не изменён: {ex.Message}"; }
@@ -643,6 +961,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private bool CanSaveMinerSettings() => !_isMinerBusy
+        && !_isAutoTuning
         && System.Text.RegularExpressions.Regex.IsMatch(WorkerNameDraft.Trim(), "^[A-Za-z0-9._-]{1,32}$")
         && IsGpuListValid(CoreClockDraft, 0, 5000)
         && IsGpuListLengthValid(CoreClockDraft)
@@ -654,7 +973,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         && IsGpuListLengthValid(KernelDraft)
         && IsGpuListValid(FanDraft, 0, 100, allowAuto: true)
         && IsGpuListLengthValid(FanDraft)
-        && TryParseTariff(ElectricityRateDraft, out _);
+        && TryParseTariff(ElectricityRateDraft, out _)
+        && TryParseTariff(NightElectricityRateDraft, out _);
 
     private static bool TryParseTariff(string text, out double rate)
     {
@@ -662,11 +982,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out rate) && rate >= 0 && rate <= 100;
     }
 
-    private bool IsGpuListLengthValid(string text) => string.IsNullOrWhiteSpace(text)
-        || text.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)
-        || text.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)
-        || Gpus.Count == 0
-        || text.Split(',', StringSplitOptions.TrimEntries).Length == Gpus.Count;
+    private bool IsGpuListLengthValid(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)
+            || text.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)
+            || text.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)
+            || Gpus.Count == 0)
+            return true;
+
+        var len = text.Split(',', StringSplitOptions.TrimEntries).Length;
+        return len == 1 || len == Gpus.Count;
+    }
 
     private static bool IsGpuListValid(string text, int min, int max, bool allowAuto = false)
     {
@@ -683,25 +1009,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (!CanSaveMinerSettings() || !TryBeginMinerAction()) return;
         try
         {
-            _ = TryParseTariff(ElectricityRateDraft, out var parsedTariff);
+            var count = Gpus.Count > 0 ? Gpus.Count : 2;
+            _ = TryParseTariff(ElectricityRateDraft, out var parsedDayTariff);
+            _ = TryParseTariff(NightElectricityRateDraft, out var parsedNightTariff);
             _config = _config with
             {
                 WorkerName = WorkerNameDraft.Trim(),
-                CoreClock = NormalizeGpuSetting(CoreClockDraft),
-                MemoryClock = NormalizeGpuSetting(MemoryClockDraft),
-                PowerLimit = NormalizeGpuSetting(PowerLimitDraft),
-                Kernel = NormalizeGpuSetting(KernelDraft),
-                Fan = NormalizeGpuSetting(FanDraft),
+                CoreClock = NormalizeGpuSetting(CoreClockDraft, count),
+                MemoryClock = NormalizeGpuSetting(MemoryClockDraft, count),
+                PowerLimit = NormalizeGpuSetting(PowerLimitDraft, count),
+                Kernel = NormalizeGpuSetting(KernelDraft, count),
+                Fan = NormalizeGpuSetting(FanDraft, count),
                 ActivePreset = ActivePreset,
-                ElectricityRateRubPerKwh = parsedTariff
+                ElectricityRateRubPerKwh = parsedDayTariff,
+                NightElectricityRateRubPerKwh = parsedNightTariff
             };
             await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             _minerControl.UpdateConfig(_config);
-            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft);
+            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
             try
             {
                 var applied = await _nvidiaSmi.ApplyPowerLimitsAsync(_config.PowerLimit, _lifetime?.Token ?? CancellationToken.None);
-                MinerControlStatus = $"Лимит применён: {applied}. Тариф {parsedTariff:0.00} ₽/кВт·ч сохранён.";
+                MinerControlStatus = $"Лимит применён: {applied}. Тариф Т1 {parsedDayTariff:0.00} / Т2 {parsedNightTariff:0.00} ₽/кВт·ч сохранён.";
                 AppendWatchdogEvent($"Применён Power Limit NVIDIA: {applied}");
             }
             catch (OperationCanceledException)
@@ -724,12 +1053,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (_isMinerBusy || _disposed) return false;
         _isMinerBusy = true;
-        StartMinerCommand.NotifyCanExecuteChanged();
-        StopMinerCommand.NotifyCanExecuteChanged();
-        ToggleMinerModeCommand.NotifyCanExecuteChanged();
-        ToggleWatchdogCommand.NotifyCanExecuteChanged();
-        ToggleSmartFanCurveCommand.NotifyCanExecuteChanged();
-        SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+        UpdateMinerState();
         return true;
     }
 
@@ -744,8 +1068,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(IsMinerRunning));
         StartMinerCommand.NotifyCanExecuteChanged();
         StopMinerCommand.NotifyCanExecuteChanged();
+        ToggleMinerModeCommand.NotifyCanExecuteChanged();
         ToggleWatchdogCommand.NotifyCanExecuteChanged();
         ToggleSmartFanCurveCommand.NotifyCanExecuteChanged();
+        ToggleDualTariffCommand.NotifyCanExecuteChanged();
+        ToggleNightScheduleCommand.NotifyCanExecuteChanged();
+        RunAutoTuneBenchmarkCommand.NotifyCanExecuteChanged();
+        PresetAutoCommand.NotifyCanExecuteChanged();
+        PresetEcoCommand.NotifyCanExecuteChanged();
+        PresetBalanceCommand.NotifyCanExecuteChanged();
+        PresetTurboCommand.NotifyCanExecuteChanged();
+        PresetSilentCommand.NotifyCanExecuteChanged();
         SaveMinerSettingsCommand.NotifyCanExecuteChanged();
     }
 
@@ -760,15 +1093,40 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         IsRefreshing = true;
         try
         {
-            var snapshot = await _telemetry.ReadAsync(_lifetime?.Token ?? CancellationToken.None);
+            var token = _lifetime?.Token ?? CancellationToken.None;
+            var snapshot = await _telemetry.ReadAsync(token);
             Apply(snapshot);
             ApplySmartFanCurveIfEnabled(snapshot.Gpus);
             MinerLogTail = _minerControl.ReadRecentLogLines(14);
+            await EvaluateDayNightScheduleAsync();
             await EvaluateWatchdogAndThermalProtectionAsync(snapshot);
+            await PollTelegramRemoteCommandsAsync();
 
-            if (PoolEarningsClient.IsValidWallet(_walletAddress) && DateTimeOffset.UtcNow - _lastEarningsRead >= TimeSpan.FromSeconds(_earningsRefreshSeconds))
+            if (force || DateTimeOffset.UtcNow - _lastPoolPingAt >= TimeSpan.FromSeconds(15))
             {
-                var earnings = await _earningsClient.ReadAsync(_walletAddress, _lifetime?.Token ?? CancellationToken.None);
+                _lastPoolPingAt = DateTimeOffset.UtcNow;
+                var ping = await _poolPingService.MeasureAsync(_config.PrimaryPool, _config.BackupPool, token);
+                PoolPingText = ping.SummaryText;
+                if (ping.PrimaryPingMs is null && ping.BackupPingMs is not null)
+                {
+                    if (!_minerControl.UseBackupPool)
+                    {
+                        _minerControl.UseBackupPool = true;
+                        MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
+                        AppendWatchdogEvent($"Сетевой монитор: основной пул RU не отвечает, выбран резервный пул EU ({ping.BackupPingMs} мс).");
+                    }
+                }
+                else if (ping.PrimaryPingMs is not null && _minerControl.UseBackupPool)
+                {
+                    _minerControl.UseBackupPool = false;
+                    MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
+                    AppendWatchdogEvent($"Сетевой монитор: основной пул RU снова доступен ({ping.PrimaryPingMs} мс).");
+                }
+            }
+
+            if (PoolEarningsClient.IsValidWallet(_walletAddress) && (force || DateTimeOffset.UtcNow - _lastEarningsRead >= TimeSpan.FromSeconds(_earningsRefreshSeconds)))
+            {
+                var earnings = await _earningsClient.ReadAsync(_walletAddress, token);
                 await ApplyEarningsAsync(earnings);
                 _lastEarningsRead = DateTimeOffset.UtcNow;
             }
@@ -785,6 +1143,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 PoolRubEstimate = "Нет данных";
                 MarketRate = "Курс PRL/RUB недоступен";
             }
+
+            if (_minerControl.IsRunning && DateTimeOffset.UtcNow - _lastCsvSnapshotAt >= TimeSpan.FromMinutes(10))
+                await RecordCsvSnapshotAsync("Периодический срез телеметрии");
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -818,15 +1179,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             var desiredFan = effectiveTemp switch
             {
-                < 50 => 40,
-                < 60 => 52,
-                < 68 => 64,
-                < 75 => 78,
-                < 80 => 90,
-                _ => 100
+                < 50 => 45,
+                < 60 => 55,
+                < 68 => 68,
+                < 75 => 82,
+                _ => 98
             };
 
-            if (_lastSmartFanApplied.TryGetValue(gpu.Id, out var prevFan) && Math.Abs(desiredFan - prevFan) < 6 && desiredFan < 100)
+            if (_lastSmartFanApplied.TryGetValue(gpu.Id, out var prevFan) && Math.Abs(desiredFan - prevFan) < 5)
                 continue;
 
             _lastSmartFanApplied[gpu.Id] = desiredFan;
@@ -839,20 +1199,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task EvaluateWatchdogAndThermalProtectionAsync(TelemetrySnapshot snapshot)
     {
-        if (!WatchdogEnabled || _isMinerBusy || _disposed) return;
+        if (!WatchdogEnabled || _isMinerBusy || _isAutoTuning || _userManuallyStopped)
+            return;
 
+        var isRunning = _minerControl.IsRunning;
         var maxCoreTemp = snapshot.Gpus.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty(0).Max();
         var maxVramTemp = snapshot.Gpus.Where(g => g.VramTempC is not null).Select(g => g.VramTempC!.Value).DefaultIfEmpty(0).Max();
-        var isRunning = _minerControl.IsRunning;
 
-        if (isRunning && (maxCoreTemp >= _config.CriticalStopTempC || maxVramTemp >= 106))
+        if (isRunning && (maxCoreTemp >= _config.CriticalStopTempC || maxVramTemp >= 104))
         {
             _thermalPaused = true;
-            var reason = maxVramTemp >= 106
-                ? $"АВАРИЙНЫЙ СТОП: температура памяти GDDR6X достигла {maxVramTemp:0} °C"
+            var reason = maxVramTemp >= 104
+                ? $"АВАРИЙНЫЙ СТОП: память GDDR6X достигла {maxVramTemp:0} °C"
                 : $"АВАРИЙНЫЙ СТОП: температура GPU достигла {maxCoreTemp:0} °C (порог {_config.CriticalStopTempC} °C)";
             WatchdogStatusText = $"{reason}. Ожидание остывания до ≤ {_config.ResumeTempC} °C.";
             AppendWatchdogEvent(reason);
+            await RecordCsvSnapshotAsync(reason);
             await SendTelegramAlertIfEnabledAsync($"🚨 {reason}\nМайнер экстренно остановлен до остывания видеокарт ≤ {_config.ResumeTempC} °C.");
             await StopMinerAsync(manual: false);
             return;
@@ -864,6 +1226,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var resumeMsg = $"Карты остыли до {maxCoreTemp:0} °C (≤ {_config.ResumeTempC} °C). Автоматическое возобновление майнинга.";
             WatchdogStatusText = resumeMsg;
             AppendWatchdogEvent(resumeMsg);
+            await RecordCsvSnapshotAsync(resumeMsg);
             await SendTelegramAlertIfEnabledAsync($"✅ {resumeMsg}");
             await StartMinerAsync(manual: false);
             return;
@@ -904,6 +1267,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     var restartMsg = $"Watchdog: 0 TH/s в течение {(int)zeroElapsed.TotalSeconds} с. Перезапуск OneZeroMiner (#{_watchdogRestartCount}).";
                     WatchdogStatusText = restartMsg;
                     AppendWatchdogEvent(restartMsg);
+                    await RecordCsvSnapshotAsync(restartMsg);
                     await SendTelegramAlertIfEnabledAsync($"⚠️ {restartMsg}{(string.IsNullOrWhiteSpace(tdrEvent) ? string.Empty : $"\nСобытие драйвера: {tdrEvent}")}");
                     await StopMinerAsync(manual: false);
                     await Task.Delay(1500, _lifetime?.Token ?? CancellationToken.None);
@@ -926,6 +1290,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PoolStatus = snapshot.PoolConnected switch { true => "Подключён", false => "Нет подключения", null => "Нет данных" };
         PoolUrl = snapshot.PoolUrl ?? "Адрес пула недоступен";
         TotalHashrate = snapshot.TotalHashrateTHs is double rate ? $"{rate:0.00} TH/s" : "Нет данных";
+        _lastTotalHashrateTHs = snapshot.TotalHashrateTHs;
 
         if (snapshot.TotalHashrateTHs is double currentRate && double.IsFinite(currentRate))
         {
@@ -935,17 +1300,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var totalPowerW = snapshot.Gpus.Where(g => g.PowerWatts is not null).Sum(g => g.PowerWatts!.Value);
         var hasPower = snapshot.Gpus.Any(g => g.PowerWatts is not null);
+        _lastTotalPowerWatts = hasPower ? totalPowerW : null;
         if (snapshot.TotalHashrateTHs is double totalThs && totalThs > 0 && hasPower && totalPowerW > 0)
         {
             var ghPerWatt = (totalThs * 1000d) / totalPowerW;
+            _lastEfficiencyGhPerWatt = ghPerWatt;
             TotalEfficiency = $"Эффективность: {ghPerWatt:0.00} GH/W · Потребление: {totalPowerW:0} Вт";
         }
         else if (hasPower)
         {
+            _lastEfficiencyGhPerWatt = null;
             TotalEfficiency = $"Эффективность: — GH/W · Потребление: {totalPowerW:0} Вт";
         }
         else
         {
+            _lastEfficiencyGhPerWatt = null;
             TotalEfficiency = "Энергоэффективность: — GH/W · Потребление: — Вт";
         }
 
@@ -981,7 +1350,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var running = _minerControl.IsRunning;
         WindowsDiagnosticsService.SetMiningSleepPrevention(running && _config.PreventSleepWhenMining);
-        if (!_isMinerBusy)
+        if (!_isMinerBusy && !_isAutoTuning)
             MinerControlStatus = _thermalPaused
                 ? $"Термо-пауза: ожидание остывания ≤ {_config.ResumeTempC} °C"
                 : running ? "Майнер запущен (защита от сна активна)" : "Майнер остановлен";
@@ -1070,24 +1439,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void UpdateElectricityAndNetProfit(DateTimeOffset sampledAt, double? totalPowerWatts)
     {
-        var tariff = TryParseTariff(ElectricityRateDraft, out var parsed) ? parsed : _config.ElectricityRateRubPerKwh;
+        var dayTariff = TryParseTariff(ElectricityRateDraft, out var parsedDay) ? parsedDay : _config.ElectricityRateRubPerKwh;
+        var nightTariff = TryParseTariff(NightElectricityRateDraft, out var parsedNight) ? parsedNight : _config.NightElectricityRateRubPerKwh;
+        var isNightNow = DualTariffEnabled && _config.IsNightTariffWindow(sampledAt.LocalDateTime);
+        var activeTariff = isNightNow ? nightTariff : dayTariff;
+        var zoneLabel = DualTariffEnabled ? (isNightNow ? $"Т2 Ночь {activeTariff:0.00} ₽" : $"Т1 День {activeTariff:0.00} ₽") : $"{activeTariff:0.00} ₽/кВт·ч";
+
         if (_lastEnergySampleAt is DateTimeOffset prev && totalPowerWatts is double watts && watts > 0)
         {
             var dtHours = (sampledAt - prev).TotalHours;
             if (dtHours is > 0 and < 0.1)
-                _sessionEnergyKwh += (watts / 1000d) * dtHours;
+            {
+                var deltaKwh = (watts / 1000d) * dtHours;
+                _sessionEnergyKwh += deltaKwh;
+                _sessionElectricityCostRub += deltaKwh * activeTariff;
+            }
         }
         _lastEnergySampleAt = sampledAt;
 
-        var sessionCostRub = _sessionEnergyKwh * tariff;
         if (totalPowerWatts is double currentWatts && currentWatts > 0)
         {
             var dailyKwh = currentWatts * 24d / 1000d;
-            var dailyCostRub = dailyKwh * tariff;
-            ElectricitySummaryText = $"Сессия: {_sessionEnergyKwh:0.000} кВт·ч ({sessionCostRub:0.00} ₽) · Розетка: {dailyCostRub:0.00} ₽/сут ({dailyKwh:0.1} кВт·ч/сут)";
+            var blendedTariff = DualTariffEnabled ? (dayTariff * 16d + nightTariff * 8d) / 24d : activeTariff;
+            var dailyCostRub = dailyKwh * blendedTariff;
+            ElectricitySummaryText = $"Сессия: {_sessionEnergyKwh:0.000} кВт·ч ({_sessionElectricityCostRub:0.00} ₽) · Сейчас: {zoneLabel} · Розетка: {dailyCostRub:0.00} ₽/сут";
             if (_lastObservedGrossRubPerDay is double grossRubPerDay)
             {
                 var netRubPerDay = grossRubPerDay - dailyCostRub;
+                _lastObservedNetRubPerDay = netRubPerDay;
                 NetProfitSummaryText = $"Чистая прибыль: {netRubPerDay:0.00} ₽/сут (начисления {grossRubPerDay:0.00} ₽ − свет {dailyCostRub:0.00} ₽)";
             }
             else
@@ -1097,7 +1476,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         else
         {
-            ElectricitySummaryText = $"Сессия: {_sessionEnergyKwh:0.000} кВт·ч ({sessionCostRub:0.00} ₽) · Тариф: {tariff:0.00} ₽/кВт·ч";
+            ElectricitySummaryText = $"Сессия: {_sessionEnergyKwh:0.000} кВт·ч ({_sessionElectricityCostRub:0.00} ₽) · Активный тариф: {zoneLabel}";
         }
     }
 
@@ -1108,6 +1487,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PoolConfirmed = FormatPrl(earnings.ConfirmedPrl);
         PoolUnconfirmed = FormatPrl(earnings.UnconfirmedPrl);
         PoolPaid = FormatPrl(earnings.PaidPrl);
+        _lastKnownTotalPrl = earnings.TotalPrl;
+        _lastKnownPrlRubRate = earnings.PrlRub;
         PoolThresholdText = earnings.PayoutThresholdPrl is double threshold && threshold > 0
             ? $"Порог выплаты: {threshold:0.####} PRL"
             : "Порог выплаты: —";
@@ -1119,6 +1500,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 var deltaPaid = currentPaid - previousPaid;
                 var payoutMsg = $"Получена выплата с пула Kryptex: +{deltaPaid:0.########} PRL (всего выплачено: {currentPaid:0.########} PRL)";
                 AppendWatchdogEvent(payoutMsg);
+                await RecordCsvSnapshotAsync(payoutMsg);
                 await SendTelegramAlertIfEnabledAsync($"💰 {payoutMsg}");
             }
             _lastKnownPaidPrl = currentPaid;
@@ -1173,10 +1555,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task SaveWalletAsync()
     {
-        var wallet = WalletAddressDraft.Trim();
+        var wallet = WalletAddressDraft.Trim().ToLowerInvariant();
         if (!PoolEarningsClient.IsValidWallet(wallet))
         {
-            WalletStatus = "Адрес PRL должен содержать 63 допустимых символа";
+            WalletStatus = "Адрес PRL должен начинаться с prl1p... (63 симв.) или prl1q... (42–44 симв.)";
             return;
         }
 
@@ -1187,7 +1569,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _lastEarningsRead = DateTimeOffset.MinValue;
             _sessionFirstBalancePrl = null;
             _sessionFirstBalanceAt = null;
-            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(wallet);
+            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(wallet, Math.Max(2, Gpus.Count));
             WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
             await RefreshAsync(force: true);
         }
@@ -1216,10 +1598,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private static string SettingDraft(string value) => string.IsNullOrWhiteSpace(value) ? "Авто" : value;
 
-    private static string NormalizeGpuSetting(string value) =>
-        string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)
-            ? string.Empty
-            : string.Join(',', value.Split(',', StringSplitOptions.TrimEntries));
+    private static string NormalizeGpuSetting(string value, int gpuCount)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return string.Empty;
+        return parts.Length == 1 && gpuCount > 1
+            ? string.Join(',', Enumerable.Repeat(parts[0], gpuCount))
+            : string.Join(',', parts);
+    }
 
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {

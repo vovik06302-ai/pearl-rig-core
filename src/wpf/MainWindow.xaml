@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:controls="clr-namespace:PearlRigCore.Controls"
-        Title="Pearl Rig Control v3.6.0" Height="960" Width="1300" MinHeight="760" MinWidth="1040"
+        Title="Pearl Rig Control v3.7.1" Height="980" Width="1340" MinHeight="760" MinWidth="1060"
         WindowStartupLocation="CenterScreen" Background="{StaticResource WindowBackground}"
         Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI"
         Loaded="Window_Loaded" StateChanged="Window_StateChanged" Closed="Window_Closed">
@@ -72,15 +72,16 @@
                 </Border>
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Text="PEARL RIG CONTROL · NVML &amp; WATCHDOG" FontSize="18" FontWeight="Bold" />
-                    <TextBlock Text="ПРЯМОЕ УПРАВЛЕНИЕ NVML · ПРЕСЕТЫ · АВТО-КУЛЕРЫ · TELEGRAM · СИСТЕМНЫЙ ТРЕЙ" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,3,0,0" />
+                    <TextBlock Text="NVML P-STATE · АВТО-БЕНЧМАРК GH/W · ДЕНЬ/НОЧЬ · TELEGRAM-УПРАВЛЕНИЕ · ПИНГ ПУЛОВ · CSV" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,3,0,0" />
                 </StackPanel>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button Content="ЗАПУСТИТЬ" Command="{Binding StartMinerCommand}" Padding="11,9" FontSize="11" Margin="0,0,5,0" ToolTip="Запустить OneZeroMiner с основным и резервным пулом PRL" />
-                <Button Content="ОСТАНОВИТЬ" Command="{Binding StopMinerCommand}" Padding="11,9" FontSize="11" Margin="0,0,5,0" Background="#6F3038" Foreground="#FFF1F2" ToolTip="Остановить майнер штатным Ctrl+C" />
-                <Button Content="{Binding MinerModeLabel}" Command="{Binding ToggleMinerModeCommand}" Padding="10,9" FontSize="11" Margin="0,0,5,0" Background="#273346" Foreground="{StaticResource TextBrush}" ToolTip="Переключить ручной режим и запуск майнера при входе в Windows" />
-                <Button Content="{Binding WatchdogButtonLabel}" Command="{Binding ToggleWatchdogCommand}" Padding="10,9" FontSize="11" Margin="0,0,5,0" Background="#1B3A36" Foreground="{StaticResource AccentBrush}" ToolTip="Включить или отключить аппаратный Watchdog и термозащиту" />
-                <Button Content="{Binding SmartFanButtonLabel}" Command="{Binding ToggleSmartFanCurveCommand}" Padding="10,9" FontSize="11" Margin="0,0,8,0" Background="#243044" Foreground="#93C5FD" ToolTip="Плавное управление кулерами по максимуму из температур Ядра и GDDR6X с гистерезисом" />
+                <Button Content="ЗАПУСТИТЬ" Command="{Binding StartMinerCommand}" Padding="10,9" FontSize="10.5" Margin="0,0,4,0" ToolTip="Запустить OneZeroMiner с основным и резервным пулом PRL" />
+                <Button Content="ОСТАНОВИТЬ" Command="{Binding StopMinerCommand}" Padding="10,9" FontSize="10.5" Margin="0,0,4,0" Background="#6F3038" Foreground="#FFF1F2" ToolTip="Остановить майнер штатным Ctrl+C" />
+                <Button Content="{Binding MinerModeLabel}" Command="{Binding ToggleMinerModeCommand}" Padding="9,9" FontSize="10.5" Margin="0,0,4,0" Background="#273346" Foreground="{StaticResource TextBrush}" ToolTip="Автозапуск с Windows через Планировщик задач (/RL HIGHEST) и автовозврат после перезагрузки" />
+                <Button Content="{Binding WatchdogButtonLabel}" Command="{Binding ToggleWatchdogCommand}" Padding="9,9" FontSize="10.5" Margin="0,0,4,0" Background="#1B3A36" Foreground="{StaticResource AccentBrush}" ToolTip="Включить или отключить аппаратный Watchdog и термозащиту" />
+                <Button Content="{Binding SmartFanButtonLabel}" Command="{Binding ToggleSmartFanCurveCommand}" Padding="9,9" FontSize="10.5" Margin="0,0,4,0" Background="#243044" Foreground="#93C5FD" ToolTip="Плавное управление кулерами по максимуму из температур Ядра и GDDR6X с гистерезисом" />
+                <Button Content="ОТЧЁТ CSV" Command="{Binding ExportCsvReportCommand}" Padding="9,9" FontSize="10.5" Margin="0,0,7,0" Background="#1F2E2B" Foreground="#A3E6D8" ToolTip="Сохранить текущий срез и открыть журнал доходности и телеметрии history.csv для Excel" />
                 <Border CornerRadius="9" Background="#111A23" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" Padding="10,9" Margin="0,0,8,0">
                     <StackPanel Orientation="Horizontal">
                         <Ellipse Width="7" Height="7" Fill="{StaticResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,7,0" />
@@ -107,7 +108,7 @@
             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
             <TextBlock Text="Показатели фермы" FontSize="22" FontWeight="Bold" />
             <TextBlock Grid.Column="1" Text="{Binding MinerControlStatus}" Foreground="{StaticResource MutedBrush}" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" Margin="16,0,12,0" />
-            <Button Grid.Column="2" Content="ОБНОВИТЬ ДАННЫЕ" Command="{Binding RefreshCommand}" Padding="11,7" FontSize="10" ToolTip="Запросить свежие показания GPU (NVML/SMI), майнера и пула" />
+            <Button Grid.Column="2" Content="ОБНОВИТЬ ДАННЫЕ" Command="{Binding RefreshCommand}" Padding="11,7" FontSize="10" ToolTip="Запросить свежие показания GPU (NVML/SMI), майнера, пинга пулов и баланса" />
             <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding ComputerSummary}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,4,12,0" TextTrimming="CharacterEllipsis" />
             <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding GpuCountLabel}" Foreground="{StaticResource AccentBrush}" FontSize="10" VerticalAlignment="Center" Margin="8,4,0,0" />
         </Grid>
@@ -140,7 +141,11 @@
             </Border>
             <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="13" Padding="14,11" Margin="6">
                 <StackPanel>
-                    <TextBlock Text="ПУЛ (ОСНОВНОЙ + РЕЗЕРВ)" Style="{StaticResource MetricCaption}" />
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="ПУЛ (ОСНОВНОЙ + РЕЗЕРВ)" Style="{StaticResource MetricCaption}" />
+                        <TextBlock Grid.Column="1" Text="{Binding PoolPingText}" Foreground="#93C5FD" FontSize="9.5" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </Grid>
                     <TextBlock Text="{Binding PoolStatus}" Style="{StaticResource MetricValue}" FontSize="18" />
                     <TextBlock Text="{Binding PoolUrl}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
@@ -194,15 +199,18 @@
                 <Grid Margin="0,0,0,8">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="ПРЕСЕТЫ И ПАРАМЕТРЫ GPU" Style="{StaticResource MetricCaption}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                        <TextBlock Text="ПРЕСЕТЫ, ТАРИФ ДЕНЬ/НОЧЬ И АВТО-БЕНЧМАРК" Style="{StaticResource MetricCaption}" VerticalAlignment="Center" Margin="0,0,12,0" />
                         <TextBlock Text="{Binding ActivePresetLabel}" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
-                        <Button Content="АВТО (ЗАВОДСКОЙ)" Command="{Binding PresetAutoCommand}" Padding="9,5" FontSize="10" Margin="0,0,5,0" Background="#1D2837" Foreground="{StaticResource TextBrush}" />
-                        <Button Content="ECO (МАКС GH/W)" Command="{Binding PresetEcoCommand}" Padding="9,5" FontSize="10" Margin="0,0,5,0" Background="#133832" Foreground="{StaticResource AccentBrush}" />
-                        <Button Content="БАЛАНС 24/7" Command="{Binding PresetBalanceCommand}" Padding="9,5" FontSize="10" Margin="0,0,5,0" Background="#1B3248" Foreground="#93C5FD" />
-                        <Button Content="TURBO (МАКС TH/s)" Command="{Binding PresetTurboCommand}" Padding="9,5" FontSize="10" Margin="0,0,5,0" Background="#462B19" Foreground="#FCD34D" />
-                        <Button Content="ТИХИЙ НОЧНОЙ" Command="{Binding PresetSilentCommand}" Padding="9,5" FontSize="10" Background="#2B243D" Foreground="#D8B4FE" />
+                        <Button Content="{Binding DualTariffButtonLabel}" Command="{Binding ToggleDualTariffCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#162A38" Foreground="#93C5FD" ToolTip="Переключить единый тариф и двухтарифный учёт День (07:00–23:00) / Ночь (23:00–07:00)" />
+                        <Button Content="{Binding NightScheduleButtonLabel}" Command="{Binding ToggleNightScheduleCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#25213B" Foreground="#D8B4FE" ToolTip="Автоматически включать Eco днём (07:00) и Balance ночью (23:00)" />
+                        <Button Content="{Binding AutoTuneButtonLabel}" Command="{Binding RunAutoTuneBenchmarkCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,8,0" Background="#3B2E14" Foreground="#FCD34D" ToolTip="Пошагово протестировать Power Limit при запущенном майнере и выбрать золотую точку с максимальным GH/W" />
+                        <Button Content="АВТО" Command="{Binding PresetAutoCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#1D2837" Foreground="{StaticResource TextBrush}" />
+                        <Button Content="ECO" Command="{Binding PresetEcoCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#133832" Foreground="{StaticResource AccentBrush}" />
+                        <Button Content="БАЛАНС" Command="{Binding PresetBalanceCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#1B3248" Foreground="#93C5FD" />
+                        <Button Content="TURBO" Command="{Binding PresetTurboCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#462B19" Foreground="#FCD34D" />
+                        <Button Content="ТИХИЙ" Command="{Binding PresetSilentCommand}" Padding="8,5" FontSize="9.5" Background="#2B243D" Foreground="#D8B4FE" />
                     </StackPanel>
                 </Grid>
                 <Border Background="#0C1B20" BorderBrush="#17645B" BorderThickness="1" CornerRadius="11" Padding="13,8" Margin="0,0,0,9">
@@ -234,15 +242,16 @@
                         <TextBlock Grid.Row="3" Text="{Binding PowerRangeHint}" Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" />
                     </Grid>
                 </Border>
-                <UniformGrid Columns="8">
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="ИМЯ РАБОТНИКА" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding WorkerNameDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="ЯДРО · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding CoreClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="ПАМЯТЬ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding MemoryClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="ЛИМИТЫ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding PowerLimitDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="KERNEL · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding KernelDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="ВЕНТИЛЯТОР" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding FanDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
-                    <StackPanel Margin="0,0,7,0"><TextBlock Text="ТАРИФ ₽/кВт·ч" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding ElectricityRateDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="7,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Стоимость 1 кВт·ч электроэнергии в рублях для расчёта затрат и чистой прибыли" /></StackPanel>
-                    <Button Content="СОХРАНИТЬ И ПРИМЕНИТЬ" Command="{Binding SaveMinerSettingsCommand}" Padding="7,7" FontSize="10.5" VerticalAlignment="Bottom" ToolTip="Сохранить профиль и применить лимит мощности через NVML / драйвер NVIDIA" />
+                <UniformGrid Columns="9">
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="ИМЯ РАБОТНИКА" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding WorkerNameDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="ЯДРО · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding CoreClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="ПАМЯТЬ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding MemoryClockDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="ЛИМИТЫ · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding PowerLimitDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="KERNEL · ID GPU" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding KernelDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="ВЕНТИЛЯТОР" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding FanDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="Т1 ДЕНЬ ₽/кВт·ч" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding ElectricityRateDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Дневной или единый тариф электроэнергии в рублях за 1 кВт·ч" /></StackPanel>
+                    <StackPanel Margin="0,0,6,0"><TextBlock Text="Т2 НОЧЬ ₽/кВт·ч" Style="{StaticResource GpuMetricLabel}" /><TextBox Text="{Binding NightElectricityRateDraft, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,0" Padding="6,5" Background="#0B1118" Foreground="{StaticResource TextBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" ToolTip="Ночной тариф электроэнергии (23:00–07:00) в рублях за 1 кВт·ч" /></StackPanel>
+                    <Button Content="СОХРАНИТЬ И ПРИМЕНИТЬ" Command="{Binding SaveMinerSettingsCommand}" Padding="6,7" FontSize="10" VerticalAlignment="Bottom" ToolTip="Сохранить профиль и применить лимит мощности через NVML / драйвер NVIDIA" />
                 </UniformGrid>
             </StackPanel>
         </Border>
@@ -259,7 +268,7 @@
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                         <StackPanel>
                                             <TextBlock Text="{Binding Name}" FontSize="16" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding SourceText}" Foreground="{StaticResource MutedBrush}" FontSize="10.5" Margin="0,3,0,0" />
+                                            <TextBlock Text="{Binding SourceText}" Foreground="{StaticResource MutedBrush}" FontSize="10.5" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding SourceText}" />
                                         </StackPanel>
                                         <Border Grid.Column="1" Background="#102D2A" CornerRadius="8" Padding="10,5" VerticalAlignment="Center">
                                             <StackPanel Orientation="Horizontal">
@@ -299,7 +308,7 @@
                                         <StackPanel Margin="0,2,0,8"><TextBlock Text="ВЕНТИЛЯТОР" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding FanText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
                                         <StackPanel Margin="0,2,4,0"><TextBlock Text="ЧАСТОТА ЯДРА" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding CoreClockText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
                                         <StackPanel Margin="0,2,4,0"><TextBlock Text="ЧАСТОТА ПАМЯТИ" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding MemoryClockText}" Style="{StaticResource GpuMetricValue}" /></StackPanel>
-                                        <StackPanel Margin="0,2,4,0"><TextBlock Text="СТАТУС ДРАЙВЕРА" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding ThrottleText}" Style="{StaticResource GpuMetricValue}" FontSize="12" ToolTip="{Binding ThrottleText}" /></StackPanel>
+                                        <StackPanel Margin="0,2,4,0"><TextBlock Text="P-STATE / ДРАЙВЕР" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding ThrottleText}" Style="{StaticResource GpuMetricValue}" FontSize="12" ToolTip="{Binding ThrottleText}" /></StackPanel>
                                         <StackPanel Margin="0,2,0,0"><TextBlock Text="ШАРЫ (ПРИН / ОТКЛ)" Style="{StaticResource GpuMetricLabel}" /><TextBlock Text="{Binding SharesText}" Style="{StaticResource GpuMetricValue}" FontSize="12" /></StackPanel>
                                     </UniformGrid>
                                 </StackPanel>
@@ -322,7 +331,7 @@
             </Border>
         </Grid>
 
-        <Expander Grid.Row="6" Header="ЖУРНАЛ ONEZEROMINER · СОБЫТИЯ WATCHDOG · УВЕДОМЛЕНИЯ TELEGRAM · КОМАНДНАЯ СТРОКА" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold" Margin="6,8,6,0" IsExpanded="False">
+        <Expander Grid.Row="6" Header="ЖУРНАЛ ONEZEROMINER · СОБЫТИЯ WATCHDOG · TELEGRAM-УПРАВЛЕНИЕ (/status, /preset, /start_miner) · КОМАНДНАЯ СТРОКА" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold" Margin="6,8,6,0" IsExpanded="False">
             <Border Background="#0D141D" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="0,6,0,0">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -338,18 +347,20 @@
                     <Grid Grid.Row="1" Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="220" />
-                            <ColumnDefinition Width="150" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="210" />
+                            <ColumnDefinition Width="140" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <CheckBox Content="Telegram-алерты" IsChecked="{Binding TelegramEnabled}" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" Margin="0,0,10,0" />
-                        <TextBox Grid.Column="1" Text="{Binding TelegramBotTokenDraft, UpdateSourceTrigger=PropertyChanged}" Padding="7,4" Margin="0,0,8,0" Background="#080D13" Foreground="{StaticResource TextBrush}" BorderBrush="#1C2937" BorderThickness="1" FontFamily="Consolas" FontSize="10.5" ToolTip="Bot Token от @BotFather (хранится только локально)" />
-                        <TextBox Grid.Column="2" Text="{Binding TelegramChatIdDraft, UpdateSourceTrigger=PropertyChanged}" Padding="7,4" Margin="0,0,8,0" Background="#080D13" Foreground="{StaticResource TextBrush}" BorderBrush="#1C2937" BorderThickness="1" FontFamily="Consolas" FontSize="10.5" ToolTip="Ваш Chat ID в Telegram" />
-                        <Button Grid.Column="3" Content="СОХРАНИТЬ" Command="{Binding SaveTelegramCommand}" Padding="10,5" FontSize="10" Margin="0,0,6,0" />
-                        <Button Grid.Column="4" Content="ТЕСТ" Command="{Binding TestTelegramCommand}" Padding="10,5" FontSize="10" Background="#243044" Foreground="#93C5FD" Margin="0,0,10,0" />
-                        <TextBlock Grid.Column="5" Text="{Binding TelegramStatusText}" Foreground="{StaticResource MutedBrush}" FontSize="10" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <CheckBox Grid.Column="1" Content="Команды бота" IsChecked="{Binding TelegramRemoteControlEnabled}" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="Разрешить приём команд (/status, /start_miner, /stop_miner, /reboot_miner, /eco, /balance, /turbo, /autotune) строго с вашего Chat ID" />
+                        <TextBox Grid.Column="2" Text="{Binding TelegramBotTokenDraft, UpdateSourceTrigger=PropertyChanged}" Padding="7,4" Margin="0,0,8,0" Background="#080D13" Foreground="{StaticResource TextBrush}" BorderBrush="#1C2937" BorderThickness="1" FontFamily="Consolas" FontSize="10.5" ToolTip="Bot Token от @BotFather (хранится только локально)" />
+                        <TextBox Grid.Column="3" Text="{Binding TelegramChatIdDraft, UpdateSourceTrigger=PropertyChanged}" Padding="7,4" Margin="0,0,8,0" Background="#080D13" Foreground="{StaticResource TextBrush}" BorderBrush="#1C2937" BorderThickness="1" FontFamily="Consolas" FontSize="10.5" ToolTip="Ваш Chat ID в Telegram" />
+                        <Button Grid.Column="4" Content="СОХРАНИТЬ" Command="{Binding SaveTelegramCommand}" Padding="10,5" FontSize="10" Margin="0,0,6,0" />
+                        <Button Grid.Column="5" Content="ТЕСТ" Command="{Binding TestTelegramCommand}" Padding="10,5" FontSize="10" Background="#243044" Foreground="#93C5FD" Margin="0,0,10,0" />
+                        <TextBlock Grid.Column="6" Text="{Binding TelegramStatusText}" Foreground="{StaticResource MutedBrush}" FontSize="10" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                     </Grid>
                     <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
