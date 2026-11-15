@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
@@ -13,6 +14,8 @@ public sealed record MinerApiResult(
     double? TotalHashrateTHs,
     long? AcceptedShares,
     long? RejectedShares,
+    long? UptimeSeconds,
+    int? ApiLatencyMs,
     IReadOnlyList<MinerGpuReading> Devices);
 
 public sealed record MinerGpuReading(
@@ -37,7 +40,11 @@ public sealed class MinerApiClient(HttpClient httpClient)
     {
         try
         {
+            var stopwatch = Stopwatch.StartNew();
             using var response = await _httpClient.GetAsync($"http://127.0.0.1:{port}/", cancellationToken);
+            stopwatch.Stop();
+            var latencyMs = (int)Math.Clamp(stopwatch.ElapsedMilliseconds, 0, 9999);
+
             if (!response.IsSuccessStatusCode)
                 return Unavailable($"API майнера ответил HTTP {(int)response.StatusCode}.");
 
@@ -47,6 +54,7 @@ public sealed class MinerApiClient(HttpClient httpClient)
             if (!TryNumber(root, "last_update", out var lastUpdate) || Math.Abs(DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastUpdate) > 20)
                 return Unavailable("API майнера недоступен или его данные устарели.");
 
+            var uptimeSeconds = ReadLong(root, "uptime") ?? ReadLong(root, "uptime_seconds");
             var devices = ReadArray(root, "devices");
             var algorithm = ReadArray(root, "algos").FirstOrDefault(item => ReadString(item, "name") == "pearlhash");
             if (algorithm.ValueKind != JsonValueKind.Object)
@@ -79,12 +87,14 @@ public sealed class MinerApiClient(HttpClient httpClient)
 
             return new MinerApiResult(
                 true,
-                "API майнера подключён; данные свежие.",
+                $"API майнера ({latencyMs} мс)",
                 connected,
                 ReadString(algorithm, "pool"),
                 ReadDouble(algorithm, "total_hashrate") is double total ? total / 1_000_000_000_000d : null,
                 ReadLong(algorithm, "total_accepted_shares"),
                 ReadLong(algorithm, "total_rejected_shares"),
+                uptimeSeconds,
+                latencyMs,
                 readings);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -105,7 +115,7 @@ public sealed class MinerApiClient(HttpClient httpClient)
         }
     }
 
-    private static MinerApiResult Unavailable(string message) => new(false, message, null, null, null, null, null, []);
+    private static MinerApiResult Unavailable(string message) => new(false, message, null, null, null, null, null, null, null, []);
 
     private static JsonElement[] ReadArray(JsonElement parent, string property) =>
         parent.ValueKind == JsonValueKind.Object && parent.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Array

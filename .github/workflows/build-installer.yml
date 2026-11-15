@@ -104,10 +104,12 @@ jobs:
           path: Output/PearlRigControl-Setup.exe
           if-no-files-found: error
 
-      - name: Attach installer to GitHub Release
-        if: github.event_name == 'release'
+      - name: Publish installer to GitHub Release
+        if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.PEARL_APP_VERSION }}
+          name: Pearl Rig Control v${{ env.PEARL_APP_VERSION }}
           files: Output/PearlRigControl-Setup.exe
           fail_on_unmatched_files: true
         env:

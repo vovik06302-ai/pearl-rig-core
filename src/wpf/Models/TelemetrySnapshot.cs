@@ -11,4 +11,6 @@ public sealed record TelemetrySnapshot(
     double? TotalHashrateTHs,
     long? AcceptedShares,
     long? RejectedShares,
+    long? UptimeSeconds,
+    int? ApiLatencyMs,
     IReadOnlyList<GpuLiveMetrics> Gpus);

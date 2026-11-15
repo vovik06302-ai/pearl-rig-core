@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Security;
 using System.Text;
 using PearlRigCore.Models;
 
@@ -15,6 +14,30 @@ public sealed class MinerControlService
     public MinerControlService(RigConfig config) => _config = config;
 
     public void UpdateConfig(RigConfig config) => _config = config;
+
+    public static string GetLogFilePath()
+    {
+        var logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PearlRigControl", "logs");
+        Directory.CreateDirectory(logDirectory);
+        return Path.Combine(logDirectory, "onezerominer.log");
+    }
+
+    public string GetCommandLinePreview(string? walletOverride = null)
+    {
+        var wallet = string.IsNullOrWhiteSpace(walletOverride) ? _config.WalletAddress : walletOverride.Trim();
+        var maskedWallet = PoolEarningsClient.IsValidWallet(wallet) ? wallet : "<PRL_WALLET>";
+        return $"onezerominer.exe {BuildArguments(_config with { WalletAddress = maskedWallet }, GetLogFilePath())}";
+    }
+
+    public string ReadRecentLogLines(int maxLines = 18)
+    {
+        var path = GetLogFilePath();
+        var excerpt = ReadLogExcerpt(path, 6000);
+        if (string.IsNullOrWhiteSpace(excerpt))
+            return "Лог майнера пока пуст или майнер ещё не запускался.";
+        var lines = excerpt.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        return string.Join(Environment.NewLine, lines.TakeLast(maxLines));
+    }
 
     public bool IsRunning
     {
@@ -42,9 +65,7 @@ public sealed class MinerControlService
         if (minerPath is null)
             throw new FileNotFoundException("Не найден onezerominer.exe. Поместите его в подпапку miner рядом с программой или в C:\\PearlRigCore.");
 
-        var logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PearlRigControl", "logs");
-        Directory.CreateDirectory(logDirectory);
-        var logPath = Path.Combine(logDirectory, "onezerominer.log");
+        var logPath = GetLogFilePath();
 
         var startInfo = new ProcessStartInfo
         {
@@ -68,7 +89,7 @@ public sealed class MinerControlService
         await Task.Delay(2500, cancellationToken);
         if (!IsRunning)
         {
-            var excerpt = ReadLogExcerpt(logPath);
+            var excerpt = ReadLogExcerpt(logPath, 3000);
             throw new InvalidOperationException($"OneZeroMiner завершился при запуске. Лог: {logPath}{(excerpt.Length == 0 ? string.Empty : Environment.NewLine + excerpt)}");
         }
     }
@@ -158,7 +179,10 @@ public sealed class MinerControlService
     private static string BuildArguments(RigConfig rig, string logPath)
     {
         static string Arg(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
-        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)} --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort} --log-file {Arg(logPath)}");
+        var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(rig.PrimaryPool)}");
+        if (!string.IsNullOrWhiteSpace(rig.BackupPool) && !string.Equals(rig.BackupPool.Trim(), rig.PrimaryPool.Trim(), StringComparison.OrdinalIgnoreCase))
+            arguments.Append(" -o2 ").Append(Arg(rig.BackupPool.Trim()));
+        arguments.Append($" --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort} --log-file {Arg(logPath)}");
         AddOverride(arguments, "--cclk", rig.CoreClock, Arg);
         AddOverride(arguments, "--mclk", rig.MemoryClock, Arg);
         AddOverride(arguments, "--pl", rig.PowerLimit, Arg);
@@ -189,15 +213,17 @@ public sealed class MinerControlService
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    private static string ReadLogExcerpt(string path)
+    private static string ReadLogExcerpt(string path, int maxChars)
     {
         try
         {
             if (!File.Exists(path)) return string.Empty;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
+            if (stream.Length > maxChars * 2)
+                stream.Seek(-maxChars * 2, SeekOrigin.End);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
             var text = reader.ReadToEnd();
-            return text.Length <= 3000 ? text : text[^3000..];
+            return text.Length <= maxChars ? text : text[^maxChars..];
         }
         catch (IOException) { return string.Empty; }
         catch (UnauthorizedAccessException) { return string.Empty; }

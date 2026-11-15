@@ -1,6 +1,6 @@
 namespace PearlRigCore.Models;
 
-/// <summary>GPU readings that came from the miner API or NVIDIA driver.</summary>
+/// <summary>GPU readings that came from the miner API or NVIDIA driver (NVML / nvidia-smi).</summary>
 public sealed record GpuLiveMetrics
 {
     public required int Id { get; init; }
@@ -15,27 +15,56 @@ public sealed record GpuLiveMetrics
     public double? PowerLimitWatts { get; init; }
     public double? MinPowerLimitWatts { get; init; }
     public double? MaxPowerLimitWatts { get; init; }
+    public double? DefaultPowerLimitWatts { get; init; }
     public double? CclkMHz { get; init; }
     public double? MclkMHz { get; init; }
+    public string? ThrottleReasons { get; init; }
+    public string? PcieLink { get; init; }
+    public IReadOnlyList<double> HashrateHistory { get; init; } = [];
+    public IReadOnlyList<double> TemperatureHistory { get; init; } = [];
     public string Status { get; init; } = "no_data";
     public string? Source { get; init; }
 
+    public double? EfficiencyGhPerWatt =>
+        HashrateTHs is double rate && rate > 0 && PowerWatts is double watts && watts > 0
+            ? (rate * 1000d) / watts
+            : null;
+
     public string HashrateText => HashrateTHs is double value ? $"{value:0.00} TH/s" : "— TH/s";
+    public string EfficiencyText => EfficiencyGhPerWatt is double eff ? $"{eff:0.00} GH/W" : "— GH/W";
     public string TemperatureText => TempC is double value ? $"{value:0} °C" : "— °C";
     public string VramTemperatureText => VramTempC is double value ? $"{value:0} °C" : "— °C";
     public string PowerText => $"{(PowerWatts is double draw ? $"{draw:0}" : "—")} / {(PowerLimitWatts is double cap ? $"{cap:0}" : "—")} W";
     public string FanText => FanPercent is double value ? $"{value:0}%" : "—";
     public string CoreClockText => CclkMHz is double value ? $"{value:0} MHz" : "— MHz";
     public string MemoryClockText => MclkMHz is double value ? $"{value:0} MHz" : "— MHz";
-    public string SharesText => AcceptedShares is long accepted ? accepted.ToString("N0") : "—";
+    public string ThrottleText => string.IsNullOrWhiteSpace(ThrottleReasons) ? "Нет данных" : ThrottleReasons;
+    public string PcieLinkText => string.IsNullOrWhiteSpace(PcieLink) ? string.Empty : $" · {PcieLink}";
+
+    public string SharesText
+    {
+        get
+        {
+            if (AcceptedShares is not long accepted) return "—";
+            var rejected = RejectedShares ?? 0;
+            var total = accepted + rejected;
+            if (total <= 0) return $"{accepted:N0} / 0";
+            var rejectPct = rejected * 100d / total;
+            return $"{accepted:N0} / {rejected:N0} ({rejectPct:0.##}% откл.)";
+        }
+    }
+
     public bool HasHashrate => HashrateTHs is double value && double.IsFinite(value) && value >= 0;
     public bool HasTemperature => TempC is double value && double.IsFinite(value) && value >= 0;
-    public bool IsOverheated => TempC is double value && double.IsFinite(value) && value >= 80;
-    public string SourceText => Source switch
+    public bool IsOverheated => (TempC is double value && double.IsFinite(value) && value >= 80)
+        || (VramTempC is double vram && double.IsFinite(vram) && vram >= 98);
+
+    public string SourceText => (Source switch
     {
-        "nvidia-smi" => "Датчики NVIDIA",
+        "nvml" => "Прямой драйвер NVML",
+        "nvidia-smi" => "Датчики NVIDIA (SMI)",
         "miner-api" => "API майнера",
         "windows-inventory" => "Обнаружена Windows; датчики недоступны",
         _ => "Источник не отвечает"
-    };
+    }) + PcieLinkText;
 }

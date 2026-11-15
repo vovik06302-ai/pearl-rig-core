@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -20,13 +21,14 @@ public sealed record NvidiaGpuReading(
     double? MinPowerLimitWatts = null,
     double? MaxPowerLimitWatts = null,
     double? DefaultPowerLimitWatts = null,
+    string? ThrottleReasons = null,
+    string? PcieLink = null,
     string Source = "nvidia-smi");
 
 public sealed record NvidiaReadResult(bool Available, string Message, IReadOnlyList<NvidiaGpuReading> Gpus);
 
 public sealed class NvidiaSmiClient
 {
-    // Avoid optional NVML fields such as temperature.memory: unsupported fields can make nvidia-smi fail the whole query.
     private const string Query = "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory,power.limit,power.min_limit,power.max_limit,power.default_limit --format=csv,noheader,nounits";
     private readonly object _inventoryLock = new();
     private DateTimeOffset _inventoryFetchedAt;
@@ -34,6 +36,9 @@ public sealed class NvidiaSmiClient
 
     public async Task<NvidiaReadResult> ReadAsync(CancellationToken cancellationToken)
     {
+        if (NvmlNativeReader.TryReadAll(out var nvmlGpus, out var nvmlMessage) && nvmlGpus.Count > 0)
+            return new NvidiaReadResult(true, nvmlMessage, nvmlGpus);
+
         var executable = ResolveExecutable();
         if (executable is null)
             return await ReadWindowsInventoryCachedAsync(cancellationToken);
@@ -55,7 +60,7 @@ public sealed class NvidiaSmiClient
                 var readings = result.Output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
                     .Select(ParseNvidiaLine).Where(gpu => gpu is not null).Cast<NvidiaGpuReading>().ToArray();
                 if (readings.Length > 0)
-                    return new(true, $"Обнаружено GPU: {string.Join(", ", readings.Select(gpu => gpu.Name))}", readings);
+                    return new(true, $"Обнаружено GPU (SMI): {string.Join(", ", readings.Select(gpu => gpu.Name))}", readings);
             }
 
             var inventory = await ReadWindowsInventoryCachedAsync(cancellationToken);
@@ -73,11 +78,14 @@ public sealed class NvidiaSmiClient
         }
     }
 
-    /// <summary>Sets per-GPU NVIDIA power caps with elevation and verifies the values returned by the driver.</summary>
+    public bool TryApplySmartFansDirect(IReadOnlyList<(int GpuId, int TargetFanPercent)> targets) =>
+        NvmlNativeReader.TrySetFanSpeeds(targets);
+
+    /// <summary>Sets per-GPU NVIDIA power caps (first via direct NVML if elevated, otherwise via elevated nvidia-smi) and verifies the values returned by the driver.</summary>
     public async Task<string> ApplyPowerLimitsAsync(string draft, CancellationToken cancellationToken)
     {
         var inventory = await ReadAsync(cancellationToken);
-        var cards = inventory.Gpus.Where(gpu => gpu.Source == "nvidia-smi").OrderBy(gpu => gpu.Id).ToArray();
+        var cards = inventory.Gpus.Where(gpu => gpu.Source is "nvml" or "nvidia-smi").OrderBy(gpu => gpu.Id).ToArray();
         if (cards.Length == 0)
             throw new InvalidOperationException($"Нужны доступные датчики NVIDIA для применения лимита. {inventory.Message}");
 
@@ -102,12 +110,16 @@ public sealed class NvidiaSmiClient
             targets.Add((gpu, watts));
         }
 
-        var executable = ResolveExecutable() ?? throw new InvalidOperationException("nvidia-smi не найден.");
-        var commands = string.Join(Environment.NewLine, targets.Select(target =>
-            $"& $nvidiaSmi -i {target.Gpu.Id} -pl {target.Watts}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}"));
-        var script = $"$ErrorActionPreference = 'Stop'\n$nvidiaSmi = '{EscapePowerShell(executable)}'\n{commands}\nexit 0";
-        await RunElevatedAsync(script, cancellationToken);
-        await Task.Delay(250, cancellationToken);
+        var appliedDirectNvml = NvmlNativeReader.TrySetPowerLimits(targets.Select(t => (t.Gpu.Id, t.Watts)).ToArray());
+        if (!appliedDirectNvml)
+        {
+            var executable = ResolveExecutable() ?? throw new InvalidOperationException("nvidia-smi не найден.");
+            var commands = string.Join(Environment.NewLine, targets.Select(target =>
+                $"& $nvidiaSmi -i {target.Gpu.Id} -pl {target.Watts}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}"));
+            var script = $"$ErrorActionPreference = 'Stop'\n$nvidiaSmi = '{EscapePowerShell(executable)}'\n{commands}\nexit 0";
+            await RunElevatedAsync(script, cancellationToken);
+            await Task.Delay(250, cancellationToken);
+        }
 
         var after = await ReadAsync(cancellationToken);
         foreach (var target in targets)
@@ -117,7 +129,8 @@ public sealed class NvidiaSmiClient
                 throw new InvalidOperationException($"Драйвер не подтвердил лимит {target.Watts} Вт для GPU #{target.Gpu.Id}; получено: {(actual is double cap ? $"{cap:0.#} Вт" : "нет данных")}.");
         }
 
-        return string.Join("; ", targets.Select(target => $"GPU #{target.Gpu.Id}: {target.Watts} Вт"));
+        var method = appliedDirectNvml ? "прямой NVML" : "драйвер NVIDIA";
+        return $"{string.Join("; ", targets.Select(target => $"GPU #{target.Gpu.Id}: {target.Watts} Вт"))} ({method})";
     }
 
     private static async Task RunElevatedAsync(string script, CancellationToken cancellationToken)
@@ -270,4 +283,300 @@ public sealed class NvidiaSmiClient
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) && double.IsFinite(number) && number >= 0 ? number : null;
 
     private sealed record ProcessResult(int ExitCode, string Output, string Error);
+
+    /// <summary>Direct native NVML reader and controller (<0.2 ms overhead, zero child processes, reads GDDR6X VRAM temp, PCIe link, and throttle bitmask).</summary>
+    private static class NvmlNativeReader
+    {
+        private const uint NvmlTemperatureGpu = 0;
+        private const uint NvmlClockGraphics = 0;
+        private const uint NvmlClockMem = 2;
+        private const uint NvmlFieldIdMemoryTemp = 82;
+
+        private static readonly object Sync = new();
+        private static bool _resolverRegistered;
+        private static bool _initialized;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        private struct NvmlPciInfo
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
+            public string busIdLegacy;
+            public uint domain;
+            public uint bus;
+            public uint device;
+            public uint pciDeviceId;
+            public uint pciSubSystemId;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+            public string busId;
+        }
+
+        [StructLayout(LayoutKind.Explicit, Size = 16)]
+        private struct NvmlValueUnion
+        {
+            [FieldOffset(0)] public double dVal;
+            [FieldOffset(0)] public int siVal;
+            [FieldOffset(0)] public long sllVal;
+            [FieldOffset(0)] public uint uiVal;
+            [FieldOffset(0)] public ulong ullVal;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NvmlFieldValue
+        {
+            public uint fieldId;
+            public uint scopeId;
+            public long timestamp;
+            public long latencyUsec;
+            public int valueType;
+            public int nvmlReturn;
+            public NvmlValueUnion value;
+        }
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2", ExactSpelling = true)]
+        private static extern int nvmlInit_v2();
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCount_v2", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetCount_v2(out uint deviceCount);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetHandleByIndex_v2", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetHandleByIndex_v2(uint index, out IntPtr device);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetName", CharSet = CharSet.Ansi, ExactSpelling = true)]
+        private static extern int nvmlDeviceGetName(IntPtr device, StringBuilder name, uint length);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPciInfo_v3", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPciInfo_v3(IntPtr device, out NvmlPciInfo pci);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetTemperature", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetTemperature(IntPtr device, uint sensorType, out uint temp);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerUsage", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPowerUsage(IntPtr device, out uint powerMilliwatts);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerManagementLimit", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPowerManagementLimit(IntPtr device, out uint limitMilliwatts);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceSetPowerManagementLimit", ExactSpelling = true)]
+        private static extern int nvmlDeviceSetPowerManagementLimit(IntPtr device, uint limitMilliwatts);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerManagementLimitConstraints", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPowerManagementLimitConstraints(IntPtr device, out uint minLimitMilliwatts, out uint maxLimitMilliwatts);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetPowerManagementDefaultLimit", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPowerManagementDefaultLimit(IntPtr device, out uint defaultLimitMilliwatts);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetFanSpeed", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetFanSpeed(IntPtr device, out uint speed);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceSetFanSpeed_v2", ExactSpelling = true)]
+        private static extern int nvmlDeviceSetFanSpeed_v2(IntPtr device, uint fan, uint speed);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetClockInfo", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetClockInfo(IntPtr device, uint type, out uint clockMhz);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCurrentClocksThrottleReasons", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetCurrentClocksThrottleReasons(IntPtr device, out ulong clocksThrottleReasons);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCurrPcieLinkGeneration", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetCurrPcieLinkGeneration(IntPtr device, out uint currLinkGen);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetCurrPcieLinkWidth", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetCurrPcieLinkWidth(IntPtr device, out uint currLinkWidth);
+
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetFieldValues", ExactSpelling = true)]
+        private static extern int nvmlDeviceGetFieldValues(IntPtr device, int valuesCount, [In, Out] NvmlFieldValue[] values);
+
+        private static bool EnsureInitialized()
+        {
+            if (!_resolverRegistered)
+            {
+                _resolverRegistered = true;
+                NativeLibrary.SetDllImportResolver(typeof(NvmlNativeReader).Assembly, ResolveNvmlLibrary);
+            }
+            if (!_initialized)
+            {
+                if (nvmlInit_v2() != 0) return false;
+                _initialized = true;
+            }
+            return true;
+        }
+
+        public static bool TrySetPowerLimits(IReadOnlyList<(int GpuId, int Watts)> targets)
+        {
+            if (targets.Count == 0) return false;
+            try
+            {
+                lock (Sync)
+                {
+                    if (!EnsureInitialized()) return false;
+                    foreach (var (gpuId, watts) in targets)
+                    {
+                        if (gpuId < 0 || nvmlDeviceGetHandleByIndex_v2((uint)gpuId, out var handle) != 0)
+                            return false;
+                        if (nvmlDeviceSetPowerManagementLimit(handle, (uint)(watts * 1000)) != 0)
+                            return false;
+                    }
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool TrySetFanSpeeds(IReadOnlyList<(int GpuId, int TargetFanPercent)> targets)
+        {
+            if (targets.Count == 0) return false;
+            try
+            {
+                lock (Sync)
+                {
+                    if (!EnsureInitialized()) return false;
+                    var anyApplied = false;
+                    foreach (var (gpuId, pct) in targets)
+                    {
+                        if (gpuId < 0 || nvmlDeviceGetHandleByIndex_v2((uint)gpuId, out var handle) != 0)
+                            continue;
+                        var clamped = (uint)Math.Clamp(pct, 30, 100);
+                        if (nvmlDeviceSetFanSpeed_v2(handle, 0, clamped) == 0)
+                        {
+                            _ = nvmlDeviceSetFanSpeed_v2(handle, 1, clamped);
+                            anyApplied = true;
+                        }
+                    }
+                    return anyApplied;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool TryReadAll(out IReadOnlyList<NvidiaGpuReading> gpus, out string message)
+        {
+            gpus = [];
+            message = string.Empty;
+            try
+            {
+                lock (Sync)
+                {
+                    if (!EnsureInitialized()) return false;
+
+                    if (nvmlDeviceGetCount_v2(out var count) != 0 || count == 0 || count > 32)
+                        return false;
+
+                    var list = new List<NvidiaGpuReading>((int)count);
+                    for (uint i = 0; i < count; i++)
+                    {
+                        if (nvmlDeviceGetHandleByIndex_v2(i, out var handle) != 0) continue;
+
+                        var nameBuilder = new StringBuilder(96);
+                        var name = nvmlDeviceGetName(handle, nameBuilder, (uint)nameBuilder.Capacity) == 0
+                            ? nameBuilder.ToString().Trim()
+                            : $"NVIDIA GPU #{i}";
+
+                        int? busId = nvmlDeviceGetPciInfo_v3(handle, out var pci) == 0 ? (int)pci.bus : null;
+                        double? tempC = nvmlDeviceGetTemperature(handle, NvmlTemperatureGpu, out var t) == 0 && t < 200 ? t : null;
+                        double? powerW = nvmlDeviceGetPowerUsage(handle, out var mw) == 0 ? Math.Round(mw / 1000d, 1) : null;
+                        double? limitW = nvmlDeviceGetPowerManagementLimit(handle, out var limitMw) == 0 ? Math.Round(limitMw / 1000d, 1) : null;
+                        double? minLimitW = null;
+                        double? maxLimitW = null;
+                        if (nvmlDeviceGetPowerManagementLimitConstraints(handle, out var minMw, out var maxMw) == 0)
+                        {
+                            minLimitW = Math.Round(minMw / 1000d, 1);
+                            maxLimitW = Math.Round(maxMw / 1000d, 1);
+                        }
+                        double? defaultLimitW = nvmlDeviceGetPowerManagementDefaultLimit(handle, out var defMw) == 0 ? Math.Round(defMw / 1000d, 1) : null;
+                        double? fanPct = nvmlDeviceGetFanSpeed(handle, out var fan) == 0 && fan <= 100 ? fan : null;
+                        double? cclk = nvmlDeviceGetClockInfo(handle, NvmlClockGraphics, out var gClk) == 0 ? gClk : null;
+                        double? mclk = nvmlDeviceGetClockInfo(handle, NvmlClockMem, out var mClk) == 0 ? mClk : null;
+                        double? vramTempC = TryReadMemoryTemp(handle);
+                        string? throttle = nvmlDeviceGetCurrentClocksThrottleReasons(handle, out var mask) == 0
+                            ? FormatThrottleMask(mask)
+                            : null;
+                        string? pcieLink = nvmlDeviceGetCurrPcieLinkGeneration(handle, out var gen) == 0 && nvmlDeviceGetCurrPcieLinkWidth(handle, out var width) == 0 && gen > 0 && width > 0
+                            ? $"PCIe Gen{gen} x{width}"
+                            : null;
+
+                        list.Add(new NvidiaGpuReading(
+                            (int)i,
+                            busId,
+                            name,
+                            tempC,
+                            powerW,
+                            fanPct,
+                            cclk,
+                            mclk,
+                            vramTempC,
+                            limitW,
+                            minLimitW,
+                            maxLimitW,
+                            defaultLimitW,
+                            throttle,
+                            pcieLink,
+                            "nvml"));
+                    }
+
+                    if (list.Count == 0) return false;
+                    gpus = list;
+                    message = $"Прямой NVML подключён ({list.Count} GPU)";
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static double? TryReadMemoryTemp(IntPtr handle)
+        {
+            var fields = new NvmlFieldValue[1];
+            fields[0].fieldId = NvmlFieldIdMemoryTemp;
+            if (nvmlDeviceGetFieldValues(handle, 1, fields) != 0 || fields[0].nvmlReturn != 0)
+                return null;
+            var temp = fields[0].value.uiVal;
+            return temp is > 0 and < 150 ? temp : null;
+        }
+
+        private static string FormatThrottleMask(ulong mask)
+        {
+            if (mask == 0) return "Норма (без ограничений)";
+            if ((mask & 0x0000000000000001UL) != 0) return "Простой (GPU Idle)";
+            var reasons = new List<string>(4);
+            if ((mask & 0x0000000000000020UL) != 0 || (mask & 0x0000000000000040UL) != 0)
+                reasons.Add("Термо-троттлинг GPU");
+            if ((mask & 0x0000000000000200UL) != 0)
+                reasons.Add("Термо-троттлинг памяти");
+            if ((mask & 0x0000000000000008UL) != 0 || (mask & 0x0000000000000080UL) != 0)
+                reasons.Add("Аппаратное питание");
+            if ((mask & 0x0000000000000004UL) != 0)
+                reasons.Add("Лимит мощности (PL)");
+            if ((mask & 0x0000000000000002UL) != 0)
+                reasons.Add("Профиль частот");
+            return reasons.Count == 0 ? "Штатная работа" : string.Join(", ", reasons);
+        }
+
+        private static IntPtr ResolveNvmlLibrary(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
+        {
+            if (!string.Equals(libraryName, "nvml.dll", StringComparison.OrdinalIgnoreCase))
+                return IntPtr.Zero;
+
+            var candidates = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvml.dll"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NVIDIA Corporation", "NVSMI", "nvml.dll")
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out var handle))
+                    return handle;
+            }
+
+            return NativeLibrary.TryLoad("nvml.dll", assembly, searchPath, out var defaultHandle) ? defaultHandle : IntPtr.Zero;
+        }
+    }
 }

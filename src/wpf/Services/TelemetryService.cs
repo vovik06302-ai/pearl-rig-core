@@ -36,10 +36,13 @@ public sealed class TelemetryService(MinerApiClient minerApi, NvidiaSmiClient nv
                 PowerLimitWatts = hardware?.PowerLimitWatts,
                 MinPowerLimitWatts = hardware?.MinPowerLimitWatts,
                 MaxPowerLimitWatts = hardware?.MaxPowerLimitWatts,
+                DefaultPowerLimitWatts = hardware?.DefaultPowerLimitWatts,
                 CclkMHz = hardware?.CclkMHz ?? minerDevice?.CclkMHz,
                 MclkMHz = hardware?.MclkMHz ?? minerDevice?.MclkMHz,
+                ThrottleReasons = hardware?.ThrottleReasons,
+                PcieLink = hardware?.PcieLink,
                 Status = hardware is not null || minerDevice is not null ? "available" : "no_data",
-                Source = hardware?.Source == "nvidia-smi" ? "nvidia-smi" : minerDevice is not null ? "miner-api" : hardware?.Source
+                Source = hardware?.Source is "nvml" or "nvidia-smi" ? hardware.Source : minerDevice is not null ? "miner-api" : hardware?.Source
             };
         }).ToArray();
 
@@ -54,6 +57,8 @@ public sealed class TelemetryService(MinerApiClient minerApi, NvidiaSmiClient nv
             miner.TotalHashrateTHs,
             miner.AcceptedShares,
             miner.RejectedShares,
+            miner.UptimeSeconds,
+            miner.ApiLatencyMs,
             gpus);
     }
 
