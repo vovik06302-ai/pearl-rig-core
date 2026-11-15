@@ -1,6 +1,6 @@
 #define AppName "Pearl Rig Control"
 #ifndef AppVersion
-#define AppVersion "3.7.1"
+#define AppVersion "3.7.2"
 #endif
 #define AppPublisher "Pearl Rig Control"
 #define AppExeName "PearlRigControl.exe"
@@ -13,7 +13,8 @@ AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\Pearl Rig Control
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=Output

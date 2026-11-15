@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using PearlRigCore.Models;
@@ -19,6 +21,7 @@ public partial class MainWindow : Window
     private readonly HttpClient _telegramHttpClient;
     private readonly NvidiaSmiClient _nvidiaSmi;
     private SystemTrayService? _trayService;
+    private bool _isSliderThumbDragging;
 
     public MainWindow()
     {
@@ -43,12 +46,18 @@ public partial class MainWindow : Window
             config);
         _viewModel.InstallerDownloaded += LaunchDownloadedInstaller;
         _viewModel.TrayStatusChanged += (text, state) => _trayService?.UpdateStatus(text, state);
+        _viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(MainViewModel.PowerSliderMinimum) or nameof(MainViewModel.PowerSliderMaximum) or nameof(MainViewModel.PowerSliderValue))
+                UpdatePowerGaugeBar(_viewModel.PowerSliderValue);
+        };
         DataContext = _viewModel;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(260)));
+        UpdatePowerGaugeBar(_viewModel.PowerSliderValue);
         _trayService = new SystemTrayService(
             this,
             RestoreFromTray,
@@ -88,12 +97,36 @@ public partial class MainWindow : Window
         _telegramHttpClient.Dispose();
     }
 
-    private void PowerLimitSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void PowerLimitSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) =>
+        UpdatePowerGaugeBar(e.NewValue);
+
+    private void PowerLimitSlider_DragStarted(object sender, DragStartedEventArgs e) =>
+        _isSliderThumbDragging = true;
+
+    private async void PowerLimitSlider_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        _isSliderThumbDragging = false;
+        await _viewModel.ApplySliderPowerLimitAsync();
+    }
+
+    private async void PowerLimitSlider_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_isSliderThumbDragging) return;
+        await _viewModel.ApplySliderPowerLimitAsync();
+    }
+
+    private async void PowerLimitSlider_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down or Key.PageUp or Key.PageDown or Key.Home or Key.End or Key.Enter)
+            await _viewModel.ApplySliderPowerLimitAsync();
+    }
+
+    private void UpdatePowerGaugeBar(double currentValue)
     {
         if (PowerGaugeScale is null || PowerLimitSlider is null) return;
         var range = PowerLimitSlider.Maximum - PowerLimitSlider.Minimum;
-        var target = range <= 0 ? 0 : Math.Clamp((e.NewValue - PowerLimitSlider.Minimum) / range, 0, 1);
-        var animation = new DoubleAnimation(target, TimeSpan.FromMilliseconds(240))
+        var target = range <= 0 ? 0 : Math.Clamp((currentValue - PowerLimitSlider.Minimum) / range, 0, 1);
+        var animation = new DoubleAnimation(target, TimeSpan.FromMilliseconds(220))
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };

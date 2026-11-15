@@ -4,7 +4,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <AssemblyName>PearlRigControl</AssemblyName>
-    <Version>3.7.1</Version>
+    <Version>3.7.2</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <Product>Pearl Rig Control</Product>
     <Company>Pearl Rig Control</Company>
     <Nullable>enable</Nullable>

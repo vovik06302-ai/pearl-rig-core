@@ -113,11 +113,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _telegramChatIdDraft;
     private string _telegramStatusText = "Уведомления Telegram не настроены";
     private double _powerSliderValue = 150;
-    private double _powerSliderMinimum = 50;
-    private double _powerSliderMaximum = 600;
-    private bool _canAdjustPowerLimit;
+    private double _powerSliderMinimum = 100;
+    private double _powerSliderMaximum = 320;
+    private bool _canAdjustPowerLimit = true;
     private bool _powerSliderInitialized;
-    private string _powerRangeHint = "Ожидание диапазона мощности от драйвера NVIDIA…";
+    private string _powerRangeHint = "Передвиньте ползунок или выберите пресет — лимит мощности (Вт) сразу применится к GPU через NVML.";
     private IReadOnlyList<double> _totalHashrateHistory = [];
     private ReleaseUpdate? _availableUpdate;
     private Version _installedVersion;
@@ -144,7 +144,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _telegramService = telegramService;
         _poolPingService = poolPingService;
         _config = config;
-        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 7, 1);
+        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 7, 2);
         _autoStartMining = config.AutoStartMining || MinerControlService.IsAutoStartTaskRegistered();
         _watchdogEnabled = config.WatchdogEnabled;
         _smartFanCurveEnabled = config.SmartFanCurveEnabled;
@@ -155,6 +155,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _coreClockDraft = SettingDraft(config.CoreClock);
         _memoryClockDraft = SettingDraft(config.MemoryClock);
         _powerLimitDraft = SettingDraft(config.PowerLimit);
+        if (TryExtractFirstWatts(_powerLimitDraft, out var initialDraftWatts))
+            _powerSliderValue = Math.Clamp(initialDraftWatts, _powerSliderMinimum, _powerSliderMaximum);
         _kernelDraft = SettingDraft(config.Kernel);
         _fanDraft = SettingDraft(config.Fan);
         _electricityRateDraft = config.ElectricityRateRubPerKwh.ToString("0.00", CultureInfo.InvariantCulture);
@@ -182,11 +184,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ToggleNightScheduleCommand = new RelayCommand(() => _ = ToggleNightScheduleAsync(), () => !_isMinerBusy);
         RunAutoTuneBenchmarkCommand = new RelayCommand(() => _ = RunAutoTuneBenchmarkAsync(), () => !_isMinerBusy && !_isAutoTuning && _minerControl.IsRunning);
         ExportCsvReportCommand = new RelayCommand(() => _ = ExportCsvReportAsync());
-        PresetAutoCommand = new RelayCommand(() => ApplyPreset("Auto"), () => !_isMinerBusy && !_isAutoTuning);
-        PresetEcoCommand = new RelayCommand(() => ApplyPreset("Eco"), () => !_isMinerBusy && !_isAutoTuning);
-        PresetBalanceCommand = new RelayCommand(() => ApplyPreset("Balance"), () => !_isMinerBusy && !_isAutoTuning);
-        PresetTurboCommand = new RelayCommand(() => ApplyPreset("Turbo"), () => !_isMinerBusy && !_isAutoTuning);
-        PresetSilentCommand = new RelayCommand(() => ApplyPreset("Silent"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetAutoCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Auto"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetEcoCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Eco"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetBalanceCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Balance"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetTurboCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Turbo"), () => !_isMinerBusy && !_isAutoTuning);
+        PresetSilentCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Silent"), () => !_isMinerBusy && !_isAutoTuning);
+        ApplyPowerLimitNowCommand = new RelayCommand(() => _ = ApplySliderPowerLimitAsync(), () => !_isMinerBusy && !_isAutoTuning);
         SaveMinerSettingsCommand = new RelayCommand(() => _ = SaveMinerSettingsAsync(), CanSaveMinerSettings);
         SaveTelegramCommand = new RelayCommand(() => _ = SaveTelegramSettingsAsync());
         TestTelegramCommand = new RelayCommand(() => _ = TestTelegramAsync());
@@ -219,6 +222,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public RelayCommand PresetBalanceCommand { get; }
     public RelayCommand PresetTurboCommand { get; }
     public RelayCommand PresetSilentCommand { get; }
+    public RelayCommand ApplyPowerLimitNowCommand { get; }
     public RelayCommand SaveMinerSettingsCommand { get; }
     public RelayCommand SaveTelegramCommand { get; }
     public RelayCommand TestTelegramCommand { get; }
@@ -252,7 +256,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (!Set(ref _walletAddressDraft, value)) return;
             SaveWalletCommand.NotifyCanExecuteChanged();
-            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
+            UpdateCommandLinePreviewFromDrafts();
         }
     }
 
@@ -289,9 +293,39 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string WatchdogEventsText { get => _watchdogEventsText; private set => Set(ref _watchdogEventsText, value); }
     public string MinerLogTail { get => _minerLogTail; private set => Set(ref _minerLogTail, value); }
     public string MinerCommandLinePreview { get => _minerCommandLinePreview; private set => Set(ref _minerCommandLinePreview, value); }
-    public string WorkerNameDraft { get => _workerNameDraft; set { if (Set(ref _workerNameDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
-    public string CoreClockDraft { get => _coreClockDraft; set { if (Set(ref _coreClockDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
-    public string MemoryClockDraft { get => _memoryClockDraft; set { if (Set(ref _memoryClockDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
+
+    public string WorkerNameDraft
+    {
+        get => _workerNameDraft;
+        set
+        {
+            if (!Set(ref _workerNameDraft, value)) return;
+            SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+            UpdateCommandLinePreviewFromDrafts();
+        }
+    }
+
+    public string CoreClockDraft
+    {
+        get => _coreClockDraft;
+        set
+        {
+            if (!Set(ref _coreClockDraft, value)) return;
+            SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+            UpdateCommandLinePreviewFromDrafts();
+        }
+    }
+
+    public string MemoryClockDraft
+    {
+        get => _memoryClockDraft;
+        set
+        {
+            if (!Set(ref _memoryClockDraft, value)) return;
+            SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+            UpdateCommandLinePreviewFromDrafts();
+        }
+    }
 
     public string PowerLimitDraft
     {
@@ -300,8 +334,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             if (!Set(ref _powerLimitDraft, value)) return;
             SaveMinerSettingsCommand.NotifyCanExecuteChanged();
-            if (int.TryParse(value.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var watts))
+            if (TryExtractFirstWatts(value, out var watts))
+            {
                 Set(ref _powerSliderValue, Math.Clamp(watts, PowerSliderMinimum, PowerSliderMaximum), nameof(PowerSliderValue));
+            }
+            else if (IsAutoSetting(value))
+            {
+                var defW = Gpus.FirstOrDefault()?.DefaultPowerLimitWatts
+                    ?? Gpus.FirstOrDefault()?.PowerLimitWatts
+                    ?? Gpus.FirstOrDefault()?.EnforcedPowerLimitWatts;
+                if (defW is double d)
+                    Set(ref _powerSliderValue, Math.Clamp(Math.Round(d), PowerSliderMinimum, PowerSliderMaximum), nameof(PowerSliderValue));
+            }
+            UpdateCommandLinePreviewFromDrafts();
         }
     }
 
@@ -310,11 +355,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         get => _powerSliderValue;
         set
         {
-            var watts = Math.Clamp(value, PowerSliderMinimum, PowerSliderMaximum);
-            if (!Set(ref _powerSliderValue, watts)) return;
-            var valueText = Math.Round(watts).ToString(CultureInfo.InvariantCulture);
-            var count = Math.Max(2, Gpus.Count);
-            PowerLimitDraft = string.Join(',', Enumerable.Repeat(valueText, count));
+            var watts = Math.Round(Math.Clamp(value, PowerSliderMinimum, PowerSliderMaximum));
+            var changed = Set(ref _powerSliderValue, watts);
+            var valueText = watts.ToString(CultureInfo.InvariantCulture);
+            var count = GetTargetNvidiaGpuCount();
+            var repeated = string.Join(',', Enumerable.Repeat(valueText, count));
+            if (changed || IsAutoSetting(_powerLimitDraft) || !string.Equals(_powerLimitDraft, repeated, StringComparison.Ordinal))
+            {
+                PowerLimitDraft = repeated;
+                ActivePreset = $"Custom-{valueText}W";
+            }
         }
     }
 
@@ -322,8 +372,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public double PowerSliderMaximum { get => _powerSliderMaximum; private set => Set(ref _powerSliderMaximum, value); }
     public bool CanAdjustPowerLimit { get => _canAdjustPowerLimit; private set => Set(ref _canAdjustPowerLimit, value); }
     public string PowerRangeHint { get => _powerRangeHint; private set => Set(ref _powerRangeHint, value); }
-    public string KernelDraft { get => _kernelDraft; set { if (Set(ref _kernelDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
-    public string FanDraft { get => _fanDraft; set { if (Set(ref _fanDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
+
+    public string KernelDraft
+    {
+        get => _kernelDraft;
+        set
+        {
+            if (!Set(ref _kernelDraft, value)) return;
+            SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+            UpdateCommandLinePreviewFromDrafts();
+        }
+    }
+
+    public string FanDraft
+    {
+        get => _fanDraft;
+        set
+        {
+            if (!Set(ref _fanDraft, value)) return;
+            SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+            UpdateCommandLinePreviewFromDrafts();
+        }
+    }
+
     public string ElectricityRateDraft { get => _electricityRateDraft; set { if (Set(ref _electricityRateDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public string NightElectricityRateDraft { get => _nightElectricityRateDraft; set { if (Set(ref _nightElectricityRateDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
     public bool TelegramEnabled { get => _telegramEnabled; set => Set(ref _telegramEnabled, value); }
@@ -349,26 +420,58 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _lifetime = new CancellationTokenSource();
         _timer.Start();
         UpdateMinerState();
-        _ = RefreshAsync();
+        _ = InitializeStartupTelemetryAndPowerAsync(launchedWithAutoMineArg);
         _ = CheckForUpdatesAsync();
+    }
+
+    private async Task InitializeStartupTelemetryAndPowerAsync(bool launchedWithAutoMineArg)
+    {
+        await RefreshAsync(force: true);
+
+        if (!string.IsNullOrWhiteSpace(_config.PowerLimit))
+        {
+            try
+            {
+                var applied = await _nvidiaSmi.ApplyPowerLimitsAsync(_config.PowerLimit, _lifetime?.Token ?? CancellationToken.None);
+                AppendWatchdogEvent($"Восстановлен сохранённый Power Limit: {applied}");
+            }
+            catch
+            {
+                // Ignore startup power limit restore error if user canceled or driver not ready.
+            }
+        }
 
         var shouldResumeAfterReboot = _config.ResumeMiningAfterReboot && _config.LastKnownMiningActive && AutoStartMining;
         if ((launchedWithAutoMineArg || shouldResumeAfterReboot) && !_minerControl.IsRunning && PoolEarningsClient.IsValidWallet(_walletAddress))
         {
             AppendWatchdogEvent("Автовосстановление сессии после загрузки Windows: запуск майнера.");
-            _ = StartMinerAsync(manual: false);
+            await StartMinerAsync(manual: false);
         }
     }
 
-    public void ApplyPresetFromTray(string presetName)
+    public void ApplyPresetFromTray(string presetName) => _ = ApplyPresetAndSaveAsync(presetName);
+
+    public async Task ApplySliderPowerLimitAsync()
+    {
+        if (_isMinerBusy || _isAutoTuning || _disposed) return;
+        var count = GetTargetNvidiaGpuCount();
+        var watts = (int)Math.Round(Math.Clamp(PowerSliderValue, PowerSliderMinimum, PowerSliderMaximum));
+        var valueText = watts.ToString(CultureInfo.InvariantCulture);
+        var repeated = string.Join(',', Enumerable.Repeat(valueText, count));
+        PowerLimitDraft = repeated;
+        ActivePreset = $"Custom-{valueText}W";
+        await SaveMinerSettingsAsync();
+    }
+
+    private async Task ApplyPresetAndSaveAsync(string presetName)
     {
         ApplyPreset(presetName);
-        _ = SaveMinerSettingsAsync();
+        await SaveMinerSettingsAsync();
     }
 
     private void ApplyPreset(string presetName)
     {
-        var count = Gpus.Count > 0 ? Gpus.Count : 2;
+        var count = GetTargetNvidiaGpuCount();
         string Repeat(string v) => string.Join(',', Enumerable.Repeat(v, count));
 
         int ClampPower(int desired)
@@ -419,9 +522,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         ActivePreset = presetName;
-        MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
-        MinerControlStatus = $"Выбран пресет «{presetName}». Нажмите «СОХРАНИТЬ И ПРИМЕНИТЬ» для записи в драйвер.";
-        AppendWatchdogEvent($"Подготовлен профиль разгона: {presetName}");
+        UpdateCommandLinePreviewFromDrafts();
+        AppendWatchdogEvent($"Выбран профиль разгона: {presetName}");
     }
 
     private async Task ToggleDualTariffAsync()
@@ -501,7 +603,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             foreach (var candidateW in candidates)
             {
-                var limitStr = string.Join(',', Enumerable.Repeat(candidateW.ToString(CultureInfo.InvariantCulture), Gpus.Count));
+                var limitStr = string.Join(',', Enumerable.Repeat(candidateW.ToString(CultureInfo.InvariantCulture), nvidiaCount));
                 MinerControlStatus = $"Авто-подбор: проверка {candidateW} Вт (стабилизация 18 с)…";
                 await _nvidiaSmi.ApplyPowerLimitsAsync(limitStr, token);
                 await Task.Delay(TimeSpan.FromSeconds(18), token);
@@ -524,7 +626,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             }
 
-            PowerLimitDraft = string.Join(',', Enumerable.Repeat(bestWatts.ToString(CultureInfo.InvariantCulture), Gpus.Count));
+            PowerLimitDraft = string.Join(',', Enumerable.Repeat(bestWatts.ToString(CultureInfo.InvariantCulture), nvidiaCount));
             ActivePreset = $"Tuned-{bestWatts}W";
             await SaveMinerSettingsAsync();
 
@@ -677,29 +779,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 case "/preset eco":
                 case "/eco":
-                    ApplyPreset("Eco");
-                    await SaveMinerSettingsAsync();
+                    await ApplyPresetAndSaveAsync("Eco");
                     await SendTelegramAlertIfEnabledAsync("🌱 Профиль переключён на ECO.", bypassCooldown: true);
                     break;
 
                 case "/preset balance":
                 case "/balance":
-                    ApplyPreset("Balance");
-                    await SaveMinerSettingsAsync();
+                    await ApplyPresetAndSaveAsync("Balance");
                     await SendTelegramAlertIfEnabledAsync("⚖️ Профиль переключён на BALANCE.", bypassCooldown: true);
                     break;
 
                 case "/preset turbo":
                 case "/turbo":
-                    ApplyPreset("Turbo");
-                    await SaveMinerSettingsAsync();
+                    await ApplyPresetAndSaveAsync("Turbo");
                     await SendTelegramAlertIfEnabledAsync("🚀 Профиль переключён на TURBO.", bypassCooldown: true);
                     break;
 
                 case "/preset silent":
                 case "/silent":
-                    ApplyPreset("Silent");
-                    await SaveMinerSettingsAsync();
+                    await ApplyPresetAndSaveAsync("Silent");
                     await SendTelegramAlertIfEnabledAsync("🌙 Профиль переключён на SILENT.", bypassCooldown: true);
                     break;
 
@@ -785,23 +883,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (_isCheckingUpdate || _isDownloadingUpdate || _disposed) return;
         _isCheckingUpdate = true;
-        UpdateStatusText = "Проверяю GitHub Releases…";
         OnPropertyChanged(nameof(UpdateButtonText));
         UpdateCommand.NotifyCanExecuteChanged();
+        UpdateStatusText = "Проверка GitHub Releases…";
         try
         {
-            _availableUpdate = await _updateService.CheckAsync(_installedVersion, _lifetime?.Token ?? CancellationToken.None);
+            var release = await _updateService.CheckForUpdateAsync(_installedVersion, _lifetime?.Token ?? CancellationToken.None);
+            _availableUpdate = release;
             OnPropertyChanged(nameof(UpdateAvailable));
             OnPropertyChanged(nameof(UpdateButtonText));
-            UpdateStatusText = _availableUpdate is null
-                ? $"Установлена v{_installedVersion.ToString(3)} · новых релизов нет"
-                : $"Доступна новая версия v{_availableUpdate.Version}";
+            UpdateStatusText = release is null
+                ? $"Установлена актуальная v{_installedVersion.ToString(3)}"
+                : $"Доступна v{release.Version} ({release.AssetSize / 1024d / 1024d:0.0} МБ) — нажмите для установки";
         }
         catch (OperationCanceledException) when (_disposed) { }
-        catch (Exception ex)
-        {
-            UpdateStatusText = $"Не удалось проверить обновление: {ex.Message}";
-        }
+        catch (Exception ex) { UpdateStatusText = $"Проверка обновлений недоступна: {ex.Message}"; }
         finally
         {
             _isCheckingUpdate = false;
@@ -858,9 +954,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         MinerControlStatus = "Запуск OneZeroMiner…";
         try
         {
+            var token = _lifetime?.Token ?? CancellationToken.None;
             if (!_gpuDiscoveryCompleted)
             {
-                var snapshot = await _telemetry.ReadAsync(_lifetime?.Token ?? CancellationToken.None);
+                var snapshot = await _telemetry.ReadAsync(token);
                 Apply(snapshot);
             }
 
@@ -877,15 +974,48 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 throw new InvalidOperationException("Сначала введите и сохраните корректный адрес PRL (prl1p... или prl1q...).");
             if (!string.Equals(wallet, _config.WalletAddress, StringComparison.OrdinalIgnoreCase))
             {
-                await RigConfig.SaveWalletAsync(wallet, _lifetime?.Token ?? CancellationToken.None);
+                await RigConfig.SaveWalletAsync(wallet, token);
+                _walletAddress = wallet;
                 WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
             }
 
             var gpuCount = nvidiaGpus.Length > 0 ? nvidiaGpus.Length : 2;
-            await _minerControl.StartAsync(wallet, gpuCount, _lifetime?.Token ?? CancellationToken.None);
+            if (CanSaveMinerSettingsCore())
+            {
+                _ = TryParseTariff(ElectricityRateDraft, out var parsedDayTariff);
+                _ = TryParseTariff(NightElectricityRateDraft, out var parsedNightTariff);
+                _config = _config with
+                {
+                    WorkerName = WorkerNameDraft.Trim(),
+                    CoreClock = NormalizeGpuSetting(CoreClockDraft, gpuCount),
+                    MemoryClock = NormalizeGpuSetting(MemoryClockDraft, gpuCount),
+                    PowerLimit = NormalizeGpuSetting(PowerLimitDraft, gpuCount),
+                    Kernel = NormalizeGpuSetting(KernelDraft, gpuCount),
+                    Fan = NormalizeGpuSetting(FanDraft, gpuCount),
+                    ActivePreset = ActivePreset,
+                    ElectricityRateRubPerKwh = parsedDayTariff,
+                    NightElectricityRateRubPerKwh = parsedNightTariff
+                };
+                _minerControl.UpdateConfig(_config);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_config.PowerLimit))
+            {
+                try
+                {
+                    var applied = await _nvidiaSmi.ApplyPowerLimitsAsync(_config.PowerLimit, token);
+                    AppendWatchdogEvent($"Лимит мощности перед запуском майнера: {applied}");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    AppendWatchdogEvent($"Предупреждение Power Limit: {ex.Message}");
+                }
+            }
+
+            await _minerControl.StartAsync(wallet, gpuCount, token);
             WindowsDiagnosticsService.SetMiningSleepPrevention(_config.PreventSleepWhenMining);
             _config = _config with { LastKnownMiningActive = true };
-            await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+            await RigConfig.SaveLocalSettingsAsync(_config, token);
             _minerStartedOrObservedAt = DateTimeOffset.UtcNow;
             _zeroHashrateSince = null;
             var unsupported = detectedGpus.Where(gpu => !IsNvidiaGpu(gpu)).Select(gpu => gpu.Name).ToArray();
@@ -909,6 +1039,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         || gpu.Name.Contains("GeForce", StringComparison.OrdinalIgnoreCase)
         || gpu.Name.Contains("Quadro", StringComparison.OrdinalIgnoreCase)
         || gpu.Name.Contains("Tesla", StringComparison.OrdinalIgnoreCase);
+
+    private int GetTargetNvidiaGpuCount()
+    {
+        var nvidiaCount = Gpus.Count(IsNvidiaGpu);
+        if (nvidiaCount > 0) return nvidiaCount;
+        return Gpus.Count > 0 ? Gpus.Count : 2;
+    }
+
+    private void UpdateCommandLinePreviewFromDrafts()
+    {
+        var count = GetTargetNvidiaGpuCount();
+        var previewConfig = _config with
+        {
+            WorkerName = string.IsNullOrWhiteSpace(_workerNameDraft) ? _config.WorkerName : _workerNameDraft.Trim(),
+            CoreClock = NormalizeGpuSetting(_coreClockDraft, count),
+            MemoryClock = NormalizeGpuSetting(_memoryClockDraft, count),
+            PowerLimit = NormalizeGpuSetting(_powerLimitDraft, count),
+            Kernel = NormalizeGpuSetting(_kernelDraft, count),
+            Fan = NormalizeGpuSetting(_fanDraft, count)
+        };
+        _minerControl.UpdateConfig(previewConfig);
+        MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
+    }
 
     private async Task StopMinerAsync(bool manual = false)
     {
@@ -960,9 +1113,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         finally { EndMinerAction(); }
     }
 
-    private bool CanSaveMinerSettings() => !_isMinerBusy
-        && !_isAutoTuning
-        && System.Text.RegularExpressions.Regex.IsMatch(WorkerNameDraft.Trim(), "^[A-Za-z0-9._-]{1,32}$")
+    private bool CanSaveMinerSettings() => !_isMinerBusy && !_isAutoTuning && CanSaveMinerSettingsCore();
+
+    private bool CanSaveMinerSettingsCore() =>
+        System.Text.RegularExpressions.Regex.IsMatch((WorkerNameDraft ?? string.Empty).Trim(), "^[A-Za-z0-9._-]{1,32}$")
         && IsGpuListValid(CoreClockDraft, 0, 5000)
         && IsGpuListLengthValid(CoreClockDraft)
         && IsGpuListValid(MemoryClockDraft, 0, 30000)
@@ -984,20 +1138,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private bool IsGpuListLengthValid(string text)
     {
-        if (string.IsNullOrWhiteSpace(text)
-            || text.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)
-            || text.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)
-            || Gpus.Count == 0)
-            return true;
-
-        var len = text.Split(',', StringSplitOptions.TrimEntries).Length;
-        return len == 1 || len == Gpus.Count;
+        if (IsAutoSetting(text)) return true;
+        var count = GetTargetNvidiaGpuCount();
+        var len = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length;
+        return len == 1 || len == count || len == Gpus.Count;
     }
 
     private static bool IsGpuListValid(string text, int min, int max, bool allowAuto = false)
     {
-        if (string.IsNullOrWhiteSpace(text) || text.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || text.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase)) return true;
-        var values = text.Split(',', StringSplitOptions.TrimEntries);
+        if (IsAutoSetting(text)) return true;
+        var values = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return values.Length is > 0 and <= 16 && values.All(value =>
             (allowAuto && value == "*") ||
             (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var number)
@@ -1009,28 +1159,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (!CanSaveMinerSettings() || !TryBeginMinerAction()) return;
         try
         {
-            var count = Gpus.Count > 0 ? Gpus.Count : 2;
+            var token = _lifetime?.Token ?? CancellationToken.None;
+            var count = GetTargetNvidiaGpuCount();
             _ = TryParseTariff(ElectricityRateDraft, out var parsedDayTariff);
             _ = TryParseTariff(NightElectricityRateDraft, out var parsedNightTariff);
+            var normalizedPowerLimit = NormalizeGpuSetting(PowerLimitDraft, count);
             _config = _config with
             {
                 WorkerName = WorkerNameDraft.Trim(),
                 CoreClock = NormalizeGpuSetting(CoreClockDraft, count),
                 MemoryClock = NormalizeGpuSetting(MemoryClockDraft, count),
-                PowerLimit = NormalizeGpuSetting(PowerLimitDraft, count),
+                PowerLimit = normalizedPowerLimit,
                 Kernel = NormalizeGpuSetting(KernelDraft, count),
                 Fan = NormalizeGpuSetting(FanDraft, count),
                 ActivePreset = ActivePreset,
                 ElectricityRateRubPerKwh = parsedDayTariff,
                 NightElectricityRateRubPerKwh = parsedNightTariff
             };
-            await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+            await RigConfig.SaveLocalSettingsAsync(_config, token);
             _minerControl.UpdateConfig(_config);
             MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
             try
             {
-                var applied = await _nvidiaSmi.ApplyPowerLimitsAsync(_config.PowerLimit, _lifetime?.Token ?? CancellationToken.None);
-                MinerControlStatus = $"Лимит применён: {applied}. Тариф Т1 {parsedDayTariff:0.00} / Т2 {parsedNightTariff:0.00} ₽/кВт·ч сохранён.";
+                var targetForDriver = string.IsNullOrWhiteSpace(normalizedPowerLimit) ? "auto" : normalizedPowerLimit;
+                var applied = await _nvidiaSmi.ApplyPowerLimitsAsync(targetForDriver, token);
+                MinerControlStatus = $"Лимит мощности применён: {applied}. Тариф Т1 {parsedDayTariff:0.00} / Т2 {parsedNightTariff:0.00} ₽/кВт·ч сохранён.";
                 AppendWatchdogEvent($"Применён Power Limit NVIDIA: {applied}");
             }
             catch (OperationCanceledException)
@@ -1040,7 +1193,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 MinerControlStatus = $"Профиль сохранён, но лимит мощности не применён: {ex.Message}";
+                AppendWatchdogEvent($"Ошибка применения Power Limit: {ex.Message}");
             }
+            _ = RefreshAsync(force: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1079,6 +1234,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PresetBalanceCommand.NotifyCanExecuteChanged();
         PresetTurboCommand.NotifyCanExecuteChanged();
         PresetSilentCommand.NotifyCanExecuteChanged();
+        ApplyPowerLimitNowCommand.NotifyCanExecuteChanged();
         SaveMinerSettingsCommand.NotifyCanExecuteChanged();
     }
 
@@ -1112,14 +1268,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     if (!_minerControl.UseBackupPool)
                     {
                         _minerControl.UseBackupPool = true;
-                        MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
+                        UpdateCommandLinePreviewFromDrafts();
                         AppendWatchdogEvent($"Сетевой монитор: основной пул RU не отвечает, выбран резервный пул EU ({ping.BackupPingMs} мс).");
                     }
                 }
                 else if (ping.PrimaryPingMs is not null && _minerControl.UseBackupPool)
                 {
                     _minerControl.UseBackupPool = false;
-                    MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
+                    UpdateCommandLinePreviewFromDrafts();
                     AppendWatchdogEvent($"Сетевой монитор: основной пул RU снова доступен ({ping.PrimaryPingMs} мс).");
                 }
             }
@@ -1389,45 +1545,46 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         var powerCards = ordered.Where(gpu => gpu.MinPowerLimitWatts is not null && gpu.MaxPowerLimitWatts is not null).ToArray();
-        if (ordered.Length > 0 && powerCards.Length == ordered.Length)
+        if (powerCards.Length > 0)
         {
             var minimum = Math.Ceiling(powerCards.Max(gpu => gpu.MinPowerLimitWatts!.Value));
             var maximum = Math.Floor(powerCards.Min(gpu => gpu.MaxPowerLimitWatts!.Value));
+            if (minimum > maximum)
+            {
+                minimum = Math.Floor(powerCards.Min(gpu => gpu.MinPowerLimitWatts!.Value));
+                maximum = Math.Ceiling(powerCards.Max(gpu => gpu.MaxPowerLimitWatts!.Value));
+            }
             if (minimum <= maximum)
             {
                 PowerSliderMinimum = minimum;
                 PowerSliderMaximum = maximum;
                 CanAdjustPowerLimit = true;
-                PowerRangeHint = $"Диапазон драйвера для всех {ordered.Length} карт: {minimum:0}–{maximum:0} Вт. Ползунок задаёт одинаковый лимит; раздельные значения — в поле по ID GPU.";
+                var currentCap = powerCards[0].EnforcedPowerLimitWatts ?? powerCards[0].PowerLimitWatts;
+                PowerRangeHint = $"Диапазон драйвера NVIDIA ({powerCards.Length} GPU): {minimum:0}–{maximum:0} Вт (активный лимит: {(currentCap is double c ? $"{c:0} Вт" : "—")}). Отпустите ползунок или нажмите «ПРИМЕНИТЬ ЛИМИТ».";
                 if (!_powerSliderInitialized)
                 {
-                    var firstDraft = PowerLimitDraft.Split(',', StringSplitOptions.TrimEntries).FirstOrDefault();
-                    var initial = int.TryParse(firstDraft, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+                    var initial = TryExtractFirstWatts(PowerLimitDraft, out var parsed)
                         ? parsed
-                        : ordered[0].PowerLimitWatts ?? minimum;
+                        : currentCap ?? powerCards[0].DefaultPowerLimitWatts ?? 150d;
                     _powerSliderInitialized = true;
-                    Set(ref _powerSliderValue, Math.Clamp(initial, minimum, maximum), nameof(PowerSliderValue));
+                    Set(ref _powerSliderValue, Math.Round(Math.Clamp(initial, minimum, maximum)), nameof(PowerSliderValue));
                 }
                 else
                 {
-                    Set(ref _powerSliderValue, Math.Clamp(PowerSliderValue, minimum, maximum), nameof(PowerSliderValue));
+                    Set(ref _powerSliderValue, Math.Round(Math.Clamp(PowerSliderValue, minimum, maximum)), nameof(PowerSliderValue));
                 }
-            }
-            else
-            {
-                CanAdjustPowerLimit = false;
-                PowerRangeHint = "У карт нет общего диапазона мощности; задайте отдельные значения в поле по ID GPU.";
             }
         }
         else
         {
-            CanAdjustPowerLimit = false;
-            PowerRangeHint = "Ползунок включится после получения допустимого диапазона NVIDIA для всех карт.";
+            CanAdjustPowerLimit = true;
+            PowerRangeHint = "Передвиньте ползунок или введите лимит мощности в ваттах и нажмите «ПРИМЕНИТЬ ЛИМИТ».";
         }
 
         OnPropertyChanged(nameof(HasNoGpus));
         OnPropertyChanged(nameof(GpuCountLabel));
         OnPropertyChanged(nameof(MaxGpuHashrateTHs));
+        SaveMinerSettingsCommand.NotifyCanExecuteChanged();
 
         var maxTemp = ordered.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty(0).Max();
         var trayState = !running
@@ -1569,7 +1726,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _lastEarningsRead = DateTimeOffset.MinValue;
             _sessionFirstBalancePrl = null;
             _sessionFirstBalanceAt = null;
-            MinerCommandLinePreview = _minerControl.GetCommandLinePreview(wallet, Math.Max(2, Gpus.Count));
+            UpdateCommandLinePreviewFromDrafts();
             WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
             await RefreshAsync(force: true);
         }
@@ -1578,6 +1735,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             WalletStatus = $"Не удалось сохранить адрес: {ex.Message}";
         }
     }
+
+    private static bool TryExtractFirstWatts(string? text, out int watts)
+    {
+        watts = 0;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var first = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        return int.TryParse(first, NumberStyles.Integer, CultureInfo.InvariantCulture, out watts) && watts > 0;
+    }
+
+    private static bool IsAutoSetting(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+        || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)
+        || value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase);
 
     private static void AppendSample(List<double> buffer, double sample)
     {
@@ -1600,7 +1770,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private static string NormalizeGpuSetting(string value, int gpuCount)
     {
-        if (string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || value.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase))
+        if (IsAutoSetting(value))
             return string.Empty;
 
         var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

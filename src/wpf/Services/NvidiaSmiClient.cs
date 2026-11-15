@@ -35,6 +35,8 @@ public sealed record NvidiaReadResult(bool Available, string Message, IReadOnlyL
 public sealed class NvidiaSmiClient
 {
     private const string Query = "--query-gpu=index,name,pci.bus_id,temperature.gpu,power.draw,fan.speed,clocks.current.graphics,clocks.current.memory,power.limit,power.min_limit,power.max_limit,power.default_limit,pstate,utilization.gpu,utilization.memory --format=csv,noheader,nounits";
+    private static string? _cachedSmiExecutable;
+    private static string? _cachedNvmlPath;
     private readonly object _inventoryLock = new();
     private DateTimeOffset _inventoryFetchedAt;
     private NvidiaReadResult? _inventoryCache;
@@ -87,7 +89,7 @@ public sealed class NvidiaSmiClient
     public bool TryApplySmartFansDirect(IReadOnlyList<(int GpuId, int TargetFanPercent)> targets) =>
         NvmlNativeReader.TrySetFanSpeeds(targets);
 
-    /// <summary>Sets per-GPU NVIDIA power caps (first via direct NVML if elevated, otherwise via elevated nvidia-smi) and verifies the values returned by the driver.</summary>
+    /// <summary>Sets per-GPU NVIDIA power caps (first via direct NVML, otherwise via elevated NVML + nvidia-smi) and verifies the values returned by the driver.</summary>
     public async Task<string> ApplyPowerLimitsAsync(string draft, CancellationToken cancellationToken)
     {
         var inventory = await ReadAsync(cancellationToken);
@@ -95,48 +97,137 @@ public sealed class NvidiaSmiClient
         if (cards.Length == 0)
             throw new InvalidOperationException($"Нужны доступные датчики NVIDIA для применения лимита. {inventory.Message}");
 
-        var isAuto = draft.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase) || draft.Trim().Equals("авто", StringComparison.OrdinalIgnoreCase);
-        var fields = isAuto ? [] : draft.Split(',', StringSplitOptions.TrimEntries);
-        if (!isAuto && fields.Length != cards.Length)
-            throw new InvalidOperationException($"Для {cards.Length} NVIDIA GPU задайте {cards.Length} значений лимита в ваттах через запятую.");
+        var trimmed = (draft ?? string.Empty).Trim();
+        var isAuto = string.IsNullOrWhiteSpace(trimmed)
+            || trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("авто", StringComparison.OrdinalIgnoreCase);
 
-        var targets = new List<(NvidiaGpuReading Gpu, int Watts)>();
+        var rawFields = isAuto
+            ? []
+            : trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var fields = isAuto
+            ? []
+            : rawFields.Length == 1 && cards.Length > 1
+                ? Enumerable.Repeat(rawFields[0], cards.Length).ToArray()
+                : rawFields;
+
+        if (!isAuto && fields.Length < cards.Length)
+            throw new InvalidOperationException($"Для {cards.Length} NVIDIA GPU задайте одно общее или {cards.Length} значений лимита в ваттах через запятую.");
+
+        var targets = new List<(NvidiaGpuReading Gpu, int Watts)>(cards.Length);
         for (var index = 0; index < cards.Length; index++)
         {
             var gpu = cards[index];
-            if (gpu.MinPowerLimitWatts is not double min || gpu.MaxPowerLimitWatts is not double max)
-                throw new InvalidOperationException($"Драйвер NVIDIA не сообщил диапазон лимита для GPU #{gpu.Id}; настройка не применена.");
+            var fallbackBase = gpu.DefaultPowerLimitWatts ?? gpu.PowerLimitWatts ?? gpu.EnforcedPowerLimitWatts ?? 285d;
+            var min = gpu.MinPowerLimitWatts ?? Math.Max(90d, Math.Round(fallbackBase * 0.35));
+            var max = gpu.MaxPowerLimitWatts ?? Math.Round(fallbackBase * 1.15);
+            var minInt = (int)Math.Ceiling(min);
+            var maxInt = (int)Math.Floor(max);
+
             int watts;
             if (isAuto)
-                watts = (int)Math.Round(gpu.DefaultPowerLimitWatts ?? throw new InvalidOperationException($"Драйвер не сообщил заводской лимит GPU #{gpu.Id}; режим «Авто» нельзя применить сразу."));
-            else if (!int.TryParse(fields[index], NumberStyles.None, CultureInfo.InvariantCulture, out watts))
-                throw new InvalidOperationException("Лимит мощности должен содержать целые значения в ваттах.");
-            if (watts < Math.Ceiling(min) || watts > Math.Floor(max))
-                throw new InvalidOperationException($"Для GPU #{gpu.Id} драйвер допускает {min:0.#}–{max:0.#} Вт, введено {watts} Вт.");
+            {
+                var defW = gpu.DefaultPowerLimitWatts ?? gpu.PowerLimitWatts ?? gpu.EnforcedPowerLimitWatts ?? max;
+                watts = (int)Math.Round(defW);
+            }
+            else if (!int.TryParse(fields[index], NumberStyles.Integer, CultureInfo.InvariantCulture, out watts))
+            {
+                throw new InvalidOperationException($"Некорректное значение лимита мощности «{fields[index]}». Укажите целые ватты.");
+            }
+
+            if (minInt <= maxInt)
+                watts = Math.Clamp(watts, minInt, maxInt);
+
             targets.Add((gpu, watts));
         }
 
-        var appliedDirectNvml = NvmlNativeReader.TrySetPowerLimits(targets.Select(t => (t.Gpu.Id, t.Watts)).ToArray());
+        var targetPairs = targets.Select(t => (t.Gpu.Id, t.Watts)).ToArray();
+        var appliedDirectNvml = NvmlNativeReader.TrySetPowerLimits(targetPairs);
         if (!appliedDirectNvml)
         {
-            var executable = ResolveExecutable() ?? throw new InvalidOperationException("nvidia-smi не найден.");
-            var commands = string.Join(Environment.NewLine, targets.Select(target =>
-                $"& $nvidiaSmi -i {target.Gpu.Id} -pl {target.Watts}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}"));
-            var script = $"$ErrorActionPreference = 'Stop'\n$nvidiaSmi = '{EscapePowerShell(executable)}'\n{commands}\nexit 0";
-            await RunElevatedAsync(script, cancellationToken);
+            await RunElevatedPowerLimitsAsync(targetPairs, cancellationToken);
             await Task.Delay(250, cancellationToken);
         }
 
         var after = await ReadAsync(cancellationToken);
         foreach (var target in targets)
         {
-            var actual = after.Gpus.FirstOrDefault(gpu => gpu.Id == target.Gpu.Id)?.PowerLimitWatts;
-            if (actual is not double value || Math.Abs(value - target.Watts) > 0.5)
-                throw new InvalidOperationException($"Драйвер не подтвердил лимит {target.Watts} Вт для GPU #{target.Gpu.Id}; получено: {(actual is double cap ? $"{cap:0.#} Вт" : "нет данных")}.");
+            var updatedGpu = after.Gpus.FirstOrDefault(gpu => gpu.Id == target.Gpu.Id);
+            var actual = updatedGpu?.PowerLimitWatts ?? updatedGpu?.EnforcedPowerLimitWatts;
+            if (actual is double value && Math.Abs(value - target.Watts) > 2.5)
+            {
+                var enforced = updatedGpu?.EnforcedPowerLimitWatts;
+                if (enforced is not double enfVal || Math.Abs(enfVal - target.Watts) > 2.5)
+                    throw new InvalidOperationException($"Драйвер не подтвердил лимит {target.Watts} Вт для GPU #{target.Gpu.Id}; текущее значение: {value:0.#} Вт.");
+            }
         }
 
-        var method = appliedDirectNvml ? "прямой NVML" : "драйвер NVIDIA";
+        var method = appliedDirectNvml ? "прямой NVML" : "NVML/SMI Администратор";
         return $"{string.Join("; ", targets.Select(target => $"GPU #{target.Gpu.Id}: {target.Watts} Вт"))} ({method})";
+    }
+
+    private static async Task RunElevatedPowerLimitsAsync(IReadOnlyList<(int GpuId, int Watts)> targets, CancellationToken cancellationToken)
+    {
+        var nvmlPath = ResolveNvmlPath() ?? "nvml.dll";
+        var smiPath = ResolveExecutable() ?? string.Empty;
+        var pairsLiteral = string.Join("; ", targets.Select(t => $"@({t.GpuId}, {t.Watts})"));
+
+        var script = $$"""
+            $ErrorActionPreference = 'Stop'
+            $nvmlPath = '{{EscapePowerShell(nvmlPath)}}'
+            $smiPath = '{{EscapePowerShell(smiPath)}}'
+            $targets = @({{pairsLiteral}})
+
+            Add-Type -TypeDefinition @"
+            using System;
+            using System.IO;
+            using System.Runtime.InteropServices;
+            public static class PearlNvmlElevated {
+                [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+                public static extern IntPtr LoadLibrary(string lpFileName);
+
+                [DllImport("nvml.dll", EntryPoint = "nvmlInit_v2", ExactSpelling = true)]
+                public static extern int nvmlInit_v2();
+
+                [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetHandleByIndex_v2", ExactSpelling = true)]
+                public static extern int nvmlDeviceGetHandleByIndex_v2(uint index, out IntPtr device);
+
+                [DllImport("nvml.dll", EntryPoint = "nvmlDeviceSetPowerManagementLimit", ExactSpelling = true)]
+                public static extern int nvmlDeviceSetPowerManagementLimit(IntPtr device, uint limitMilliwatts);
+
+                public static bool Apply(string dllPath, int gpuId, int watts) {
+                    try {
+                        if (!string.IsNullOrEmpty(dllPath) && File.Exists(dllPath)) {
+                            LoadLibrary(dllPath);
+                        }
+                        if (nvmlInit_v2() != 0) return false;
+                        IntPtr handle;
+                        if (nvmlDeviceGetHandleByIndex_v2((uint)gpuId, out handle) != 0) return false;
+                        return nvmlDeviceSetPowerManagementLimit(handle, (uint)(watts * 1000)) == 0;
+                    } catch {
+                        return false;
+                    }
+                }
+            }
+            "@
+
+            foreach ($pair in $targets) {
+                $gpuId = [int]$pair[0]
+                $watts = [int]$pair[1]
+                $ok = [PearlNvmlElevated]::Apply($nvmlPath, $gpuId, $watts)
+                if (-not $ok) {
+                    if ([string]::IsNullOrWhiteSpace($smiPath) -or -not (Test-Path -LiteralPath $smiPath)) {
+                        exit 41
+                    }
+                    & $smiPath -i $gpuId -pl $watts
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                }
+            }
+            exit 0
+            """;
+
+        await RunElevatedAsync(script, cancellationToken);
     }
 
     private static async Task RunElevatedAsync(string script, CancellationToken cancellationToken)
@@ -156,7 +247,7 @@ public sealed class NvidiaSmiClient
             using var process = Process.Start(info) ?? throw new InvalidOperationException("Не удалось запустить операцию управления питанием.");
             await process.WaitForExitAsync(cancellationToken);
             if (process.ExitCode != 0)
-                throw new InvalidOperationException($"nvidia-smi не изменил лимит мощности (код {process.ExitCode}). Проверьте права Windows и поддержку драйвера.");
+                throw new InvalidOperationException($"Драйвер NVIDIA отклонил изменение лимита мощности (код {process.ExitCode}). Запустите программу от имени Администратора.");
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
@@ -246,6 +337,9 @@ public sealed class NvidiaSmiClient
 
     private static string? ResolveExecutable()
     {
+        if (!string.IsNullOrWhiteSpace(_cachedSmiExecutable) && File.Exists(_cachedSmiExecutable))
+            return _cachedSmiExecutable;
+
         var candidates = new List<string>();
         var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
         candidates.Add(Path.Combine(system, "nvidia-smi.exe"));
@@ -256,7 +350,46 @@ public sealed class NvidiaSmiClient
         candidates.AddRange((Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
             .Select(directory => Path.Combine(directory.Trim(), "nvidia-smi.exe")));
-        return candidates.FirstOrDefault(File.Exists);
+
+        var found = candidates.FirstOrDefault(File.Exists) ?? FindInDriverStore("nvidia-smi.exe");
+        if (found is not null) _cachedSmiExecutable = found;
+        return found;
+    }
+
+    private static string? ResolveNvmlPath()
+    {
+        if (!string.IsNullOrWhiteSpace(_cachedNvmlPath) && File.Exists(_cachedNvmlPath))
+            return _cachedNvmlPath;
+
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvml.dll"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NVIDIA Corporation", "NVSMI", "nvml.dll")
+        };
+
+        var found = candidates.FirstOrDefault(File.Exists) ?? FindInDriverStore("nvml.dll");
+        if (found is not null) _cachedNvmlPath = found;
+        return found;
+    }
+
+    private static string? FindInDriverStore(string fileName)
+    {
+        try
+        {
+            var repo = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "DriverStore", "FileRepository");
+            if (!Directory.Exists(repo)) return null;
+            foreach (var dir in Directory.EnumerateDirectories(repo, "nv*"))
+            {
+                var candidate = Path.Combine(dir, fileName);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+        catch
+        {
+            // Ignore permission or IO errors when scanning DriverStore.
+        }
+        return null;
     }
 
     private static NvidiaGpuReading? ParseNvidiaLine(string line)
@@ -266,6 +399,14 @@ public sealed class NvidiaSmiClient
         var hasFan = fields.Length >= 8;
         var hasClocks = fields.Length >= 7;
         var hasTemperatureAndPower = fields.Length >= 5;
+        var limitW = fields.Length >= 12 ? ParseNumber(fields[8]) : null;
+        var minW = fields.Length >= 12 ? ParseNumber(fields[9]) : null;
+        var maxW = fields.Length >= 12 ? ParseNumber(fields[10]) : null;
+        var defW = fields.Length >= 12 ? ParseNumber(fields[11]) : null;
+        var fallbackBase = defW ?? limitW ?? 285d;
+        minW ??= Math.Max(90d, Math.Round(fallbackBase * 0.35));
+        maxW ??= Math.Round(fallbackBase * 1.15);
+
         return new NvidiaGpuReading(id, ParseBusId(fields[2]), fields[1],
             hasTemperatureAndPower ? ParseNumber(fields[3]) : null,
             hasTemperatureAndPower ? ParseNumber(fields[4]) : null,
@@ -273,10 +414,10 @@ public sealed class NvidiaSmiClient
             hasClocks ? ParseNumber(fields[hasFan ? 6 : 5]) : null,
             hasClocks ? ParseNumber(fields[hasFan ? 7 : 6]) : null,
             null,
-            fields.Length >= 12 ? ParseNumber(fields[8]) : null,
-            fields.Length >= 12 ? ParseNumber(fields[9]) : null,
-            fields.Length >= 12 ? ParseNumber(fields[10]) : null,
-            fields.Length >= 12 ? ParseNumber(fields[11]) : null,
+            limitW,
+            minW,
+            maxW,
+            defW,
             PState: fields.Length >= 15 && !string.IsNullOrWhiteSpace(fields[12]) ? fields[12] : null,
             CoreUtilizationPercent: fields.Length >= 15 ? ParseNumber(fields[13]) : null,
             MemoryUtilizationPercent: fields.Length >= 15 ? ParseNumber(fields[14]) : null);
@@ -510,14 +651,21 @@ public sealed class NvidiaSmiClient
                         double? powerW = nvmlDeviceGetPowerUsage(handle, out var mw) == 0 ? Math.Round(mw / 1000d, 1) : null;
                         double? limitW = nvmlDeviceGetPowerManagementLimit(handle, out var limitMw) == 0 ? Math.Round(limitMw / 1000d, 1) : null;
                         double? enforcedW = nvmlDeviceGetEnforcedPowerLimit(handle, out var enfMw) == 0 ? Math.Round(enfMw / 1000d, 1) : null;
+                        double? defaultLimitW = nvmlDeviceGetPowerManagementDefaultLimit(handle, out var defMw) == 0 ? Math.Round(defMw / 1000d, 1) : null;
                         double? minLimitW = null;
                         double? maxLimitW = null;
-                        if (nvmlDeviceGetPowerManagementLimitConstraints(handle, out var minMw, out var maxMw) == 0)
+                        if (nvmlDeviceGetPowerManagementLimitConstraints(handle, out var minMw, out var maxMw) == 0 && minMw > 0 && maxMw >= minMw)
                         {
                             minLimitW = Math.Round(minMw / 1000d, 1);
                             maxLimitW = Math.Round(maxMw / 1000d, 1);
                         }
-                        double? defaultLimitW = nvmlDeviceGetPowerManagementDefaultLimit(handle, out var defMw) == 0 ? Math.Round(defMw / 1000d, 1) : null;
+                        else
+                        {
+                            var fallbackBase = defaultLimitW ?? limitW ?? enforcedW ?? 285d;
+                            minLimitW = Math.Max(90d, Math.Round(fallbackBase * 0.35));
+                            maxLimitW = Math.Round(fallbackBase * 1.15);
+                        }
+
                         double? fanPct = nvmlDeviceGetFanSpeed(handle, out var fan) == 0 && fan <= 100 ? fan : null;
                         double? cclk = nvmlDeviceGetClockInfo(handle, NvmlClockGraphics, out var gClk) == 0 ? gClk : null;
                         double? mclk = nvmlDeviceGetClockInfo(handle, NvmlClockMem, out var mClk) == 0 ? mClk : null;
@@ -609,17 +757,9 @@ public sealed class NvidiaSmiClient
             if (!string.Equals(libraryName, "nvml.dll", StringComparison.OrdinalIgnoreCase))
                 return IntPtr.Zero;
 
-            var candidates = new[]
-            {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvml.dll"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NVIDIA Corporation", "NVSMI", "nvml.dll")
-            };
-
-            foreach (var candidate in candidates)
-            {
-                if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out var handle))
-                    return handle;
-            }
+            var resolvedPath = ResolveNvmlPath();
+            if (!string.IsNullOrWhiteSpace(resolvedPath) && NativeLibrary.TryLoad(resolvedPath, out var handle))
+                return handle;
 
             return NativeLibrary.TryLoad("nvml.dll", assembly, searchPath, out var defaultHandle) ? defaultHandle : IntPtr.Zero;
         }

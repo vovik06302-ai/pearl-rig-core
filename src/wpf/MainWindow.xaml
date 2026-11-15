@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:controls="clr-namespace:PearlRigCore.Controls"
-        Title="Pearl Rig Control v3.7.1" Height="980" Width="1340" MinHeight="760" MinWidth="1060"
+        Title="Pearl Rig Control v3.7.2" Height="980" Width="1340" MinHeight="760" MinWidth="1060"
         WindowStartupLocation="CenterScreen" Background="{StaticResource WindowBackground}"
         Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI"
         Loaded="Window_Loaded" StateChanged="Window_StateChanged" Closed="Window_Closed">
@@ -206,25 +206,26 @@
                         <Button Content="{Binding DualTariffButtonLabel}" Command="{Binding ToggleDualTariffCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#162A38" Foreground="#93C5FD" ToolTip="Переключить единый тариф и двухтарифный учёт День (07:00–23:00) / Ночь (23:00–07:00)" />
                         <Button Content="{Binding NightScheduleButtonLabel}" Command="{Binding ToggleNightScheduleCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#25213B" Foreground="#D8B4FE" ToolTip="Автоматически включать Eco днём (07:00) и Balance ночью (23:00)" />
                         <Button Content="{Binding AutoTuneButtonLabel}" Command="{Binding RunAutoTuneBenchmarkCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,8,0" Background="#3B2E14" Foreground="#FCD34D" ToolTip="Пошагово протестировать Power Limit при запущенном майнере и выбрать золотую точку с максимальным GH/W" />
-                        <Button Content="АВТО" Command="{Binding PresetAutoCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#1D2837" Foreground="{StaticResource TextBrush}" />
-                        <Button Content="ECO" Command="{Binding PresetEcoCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#133832" Foreground="{StaticResource AccentBrush}" />
-                        <Button Content="БАЛАНС" Command="{Binding PresetBalanceCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#1B3248" Foreground="#93C5FD" />
-                        <Button Content="TURBO" Command="{Binding PresetTurboCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#462B19" Foreground="#FCD34D" />
-                        <Button Content="ТИХИЙ" Command="{Binding PresetSilentCommand}" Padding="8,5" FontSize="9.5" Background="#2B243D" Foreground="#D8B4FE" />
+                        <Button Content="АВТО" Command="{Binding PresetAutoCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#1D2837" Foreground="{StaticResource TextBrush}" ToolTip="Сбросить лимит мощности к заводскому значению VBIOS" />
+                        <Button Content="ECO" Command="{Binding PresetEcoCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#133832" Foreground="{StaticResource AccentBrush}" ToolTip="Применить энергоэффективный профиль 135 Вт" />
+                        <Button Content="БАЛАНС" Command="{Binding PresetBalanceCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#1B3248" Foreground="#93C5FD" ToolTip="Применить оптимальный профиль 150 Вт" />
+                        <Button Content="TURBO" Command="{Binding PresetTurboCommand}" Padding="8,5" FontSize="9.5" Margin="0,0,4,0" Background="#462B19" Foreground="#FCD34D" ToolTip="Применить производительный профиль 185 Вт" />
+                        <Button Content="ТИХИЙ" Command="{Binding PresetSilentCommand}" Padding="8,5" FontSize="9.5" Background="#2B243D" Foreground="#D8B4FE" ToolTip="Применить тихий профиль 125 Вт" />
                     </StackPanel>
                 </Grid>
                 <Border Background="#0C1B20" BorderBrush="#17645B" BorderThickness="1" CornerRadius="11" Padding="13,8" Margin="0,0,0,9">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="8" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                         <Grid Grid.Row="0" Margin="0,0,0,2">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <TextBlock Text="ЛИМИТ МОЩНОСТИ GPU · ПЕРЕДВИНЬТЕ ПОЛЗУНОК ПО ГОРИЗОНТАЛЬНОЙ ШКАЛЕ" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{Binding PowerSliderValue, StringFormat={}{0:0} Вт}" Foreground="{StaticResource AccentBrush}" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,0,0" />
+                            <TextBlock Grid.Column="1" Text="{Binding PowerSliderValue, StringFormat={}{0:0} Вт}" Foreground="{StaticResource AccentBrush}" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,10,0" />
+                            <Button Grid.Column="2" Content="ПРИМЕНИТЬ ЛИМИТ" Command="{Binding ApplyPowerLimitNowCommand}" Padding="10,4" FontSize="9.5" Background="#14453D" Foreground="#E9FFFA" VerticalAlignment="Center" ToolTip="Немедленно записать выбранный лимит мощности (Вт) во все видеокарты через NVML" />
                         </Grid>
                         <Grid Grid.Row="1">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="48" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding PowerSliderMinimum, StringFormat={}{0:0}}" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" />
-                            <Slider x:Name="PowerLimitSlider" Grid.Column="1" Minimum="{Binding PowerSliderMinimum}" Maximum="{Binding PowerSliderMaximum}" Value="{Binding PowerSliderValue, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanAdjustPowerLimit}" Height="34" Margin="8,0" TickFrequency="10" IsSnapToTickEnabled="True" TickPlacement="BottomRight" AutoToolTipPlacement="TopLeft" ValueChanged="PowerLimitSlider_ValueChanged" />
+                            <Slider x:Name="PowerLimitSlider" Grid.Column="1" Minimum="{Binding PowerSliderMinimum}" Maximum="{Binding PowerSliderMaximum}" Value="{Binding PowerSliderValue, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanAdjustPowerLimit}" Height="34" Margin="8,0" TickFrequency="5" SmallChange="1" LargeChange="5" IsSnapToTickEnabled="False" TickPlacement="BottomRight" AutoToolTipPlacement="TopLeft" ValueChanged="PowerLimitSlider_ValueChanged" primitives:Thumb.DragStarted="PowerLimitSlider_DragStarted" primitives:Thumb.DragCompleted="PowerLimitSlider_DragCompleted" PreviewMouseLeftButtonUp="PowerLimitSlider_MouseUp" KeyUp="PowerLimitSlider_KeyUp" />
                             <TextBlock Grid.Column="2" Text="{Binding PowerSliderMaximum, StringFormat={}{0:0}}" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right" />
                         </Grid>
                         <Border Grid.Row="2" Background="#17232E" CornerRadius="4" ClipToBounds="True" Margin="49,0">
