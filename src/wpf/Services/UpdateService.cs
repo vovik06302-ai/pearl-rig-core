@@ -1,11 +1,11 @@
-using System.Net.Http;
 using System.IO;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace PearlRigCore.Services;
 
-public sealed record ReleaseUpdate(string Version, Uri InstallerUri, long SizeBytes, string? Sha256)
+public sealed record ReleaseUpdate(string Version, Uri InstallerUri, long SizeBytes, string? Sha256, string? ReleaseNotes = null)
 {
     public long AssetSize => SizeBytes;
 }
@@ -52,7 +52,34 @@ public sealed class UpdateService(HttpClient httpClient)
         var size = installer.TryGetProperty("size", out var sizeElement) && sizeElement.TryGetInt64(out var parsedSize) ? parsedSize : 0;
         var digest = ReadString(installer, "digest");
         var sha256 = digest?.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) == true ? digest[7..] : null;
-        return new ReleaseUpdate(latestVersion.ToString(3), uri, size, sha256);
+        if (string.IsNullOrWhiteSpace(sha256))
+        {
+            var shaAsset = assets.EnumerateArray().FirstOrDefault(asset =>
+                string.Equals(ReadString(asset, "name"), "PearlRigControl-Setup.exe.sha256", StringComparison.OrdinalIgnoreCase));
+            if (shaAsset.ValueKind == JsonValueKind.Object &&
+                Uri.TryCreate(ReadString(shaAsset, "browser_download_url"), UriKind.Absolute, out var shaUri) &&
+                shaUri.Scheme == Uri.UriSchemeHttps)
+            {
+                sha256 = await TryFetchSha256TextAsync(shaUri, cancellationToken);
+            }
+        }
+
+        var releaseNotes = ReadString(root, "body")?.Trim();
+        return new ReleaseUpdate(latestVersion.ToString(3), uri, size, sha256, releaseNotes);
+    }
+
+    private async Task<string?> TryFetchSha256TextAsync(Uri shaUri, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var text = await httpClient.GetStringAsync(shaUri, cancellationToken);
+            var token = text.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            return token is { Length: 64 } && token.All(Uri.IsHexDigit) ? token : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public async Task<string> DownloadInstallerAsync(ReleaseUpdate release, IProgress<DownloadProgress> progress, CancellationToken cancellationToken)

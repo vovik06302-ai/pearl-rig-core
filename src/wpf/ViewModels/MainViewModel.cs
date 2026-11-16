@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Threading;
@@ -19,9 +21,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly NvidiaSmiClient _nvidiaSmi;
     private readonly TelegramAlertService _telegramService;
     private readonly PoolPingService _poolPingService;
+    private readonly SmartFanController _smartFanController = new();
+    private readonly ProfitabilityCalculator _profitability = new();
+    private readonly WatchdogService _watchdog = new();
     private readonly Dictionary<int, List<double>> _gpuHashrateBuffers = [];
     private readonly Dictionary<int, List<double>> _gpuTempBuffers = [];
-    private readonly Dictionary<int, int> _lastSmartFanApplied = [];
     private readonly List<double> _totalHashrateBuffer = [];
     private readonly List<string> _watchdogEvents = [];
     private RigConfig _config;
@@ -32,27 +36,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private DateTimeOffset _lastPoolPingAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastTelegramPollAt = DateTimeOffset.MinValue;
     private DateTimeOffset _lastCsvSnapshotAt = DateTimeOffset.MinValue;
-    private DateTimeOffset? _lastEnergySampleAt;
-    private DateTimeOffset? _sessionFirstBalanceAt;
-    private double? _sessionFirstBalancePrl;
+    private DateTimeOffset _lastSessionSaveAt = DateTimeOffset.MinValue;
     private double? _lastKnownPaidPrl;
     private double? _lastKnownTotalPrl;
     private double? _lastKnownPrlRubRate;
-    private double? _lastObservedGrossRubPerDay;
-    private double? _lastObservedNetRubPerDay;
     private double? _lastTotalHashrateTHs;
     private double? _lastTotalPowerWatts;
     private double? _lastEfficiencyGhPerWatt;
-    private double _sessionEnergyKwh;
-    private double _sessionElectricityCostRub;
-    private DateTimeOffset? _minerStartedOrObservedAt;
-    private DateTimeOffset? _zeroHashrateSince;
-    private DateTimeOffset _lastThermalWarningAt = DateTimeOffset.MinValue;
     private bool _userManuallyStopped;
-    private bool _thermalPaused;
     private bool _isAutoTuning;
     private string? _lastScheduledWindowApplied;
-    private int _watchdogRestartCount;
     private string _walletAddress;
     private bool _isRefreshing;
     private bool _manualRefreshQueued;
@@ -66,7 +59,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _totalHashrate = "Нет данных";
     private string _totalEfficiency = "Энергоэффективность: — GH/W · Потребление: — Вт";
     private string _electricitySummaryText = "Электроэнергия: 0.000 кВт·ч (0.00 ₽) · Сутки: — ₽";
-    private string _netProfitSummaryText = "Чистый доход (после розетки): ожидание замеров";
+    private string _netProfitSummaryText = "Чистая прибыль (после розетки): ожидание замеров";
     private string _acceptedShares = "Нет данных";
     private string _rejectedShares = "Нет данных";
     private string _minerUptimeText = "Аптайм: — · API: —";
@@ -93,10 +86,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _smartFanCurveEnabled;
     private bool _dualTariffEnabled;
     private bool _nightScheduleEnabled;
+    private bool _autoRestartMinerOnOverclockChange;
+    private bool _autoSwitchToBackupPoolOnDrop;
     private string _activePreset;
     private string _watchdogStatusText = "Watchdog и термозащита активны";
     private string _watchdogEventsText = "Журнал защиты запущен. Аварийных событий нет.";
     private string _minerLogTail = "Ожидание чтения onezerominer.log…";
+    private string _appLogTail = "Журнал программы инициализирован.";
     private string _minerCommandLinePreview = string.Empty;
     private string _minerControlStatus = "Проверка майнера…";
     private string _workerNameDraft;
@@ -107,6 +103,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string _fanDraft;
     private string _electricityRateDraft;
     private string _nightElectricityRateDraft;
+    private string _fanCurveTempLowCDraft;
+    private string _fanCurveSpeedLowPctDraft;
+    private string _fanCurveTempMidCDraft;
+    private string _fanCurveSpeedMidPctDraft;
+    private string _fanCurveTempHighCDraft;
+    private string _fanCurveSpeedHighPctDraft;
+    private string _fanHysteresisCDraft;
+    private string _vramTempOffsetCDraft;
+    private string _warningTempCDraft;
+    private string _criticalStopTempCDraft;
+    private string _resumeTempCDraft;
+    private string _zeroHashrateRestartSecondsDraft;
+    private string _poolDropSwitchThresholdCountDraft;
+    private string _autoTuneStepSecondsDraft;
+    private string _dayTariffStartHourDraft;
+    private string _nightTariffStartHourDraft;
+    private string _daySchedulePreset;
+    private string _nightSchedulePreset;
+    private string _primaryPoolDraft;
+    private string _backupPoolDraft;
     private bool _telegramEnabled;
     private bool _telegramRemoteControlEnabled;
     private string _telegramBotTokenDraft;
@@ -125,6 +141,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _isDownloadingUpdate;
     private double _updateProgress;
     private string _updateStatusText = "Проверка версии…";
+    private string _connectionHealthLevel = "Partial";
+    private string _poolConnectedState = "Unknown";
+    private string _toastMessage = string.Empty;
+    private string _toastSeverity = "Info";
+    private DateTimeOffset _toastExpiresAt = DateTimeOffset.MinValue;
+    private string _dailyNetProfitKpiText = "Ожидание темпа PRL";
+    private string _dailyElectricityKpiText = "— ₽/сут";
+    private string _payoutEtaText = "Ожидание замеров";
+    private string _currentScheduleStatusText = "Тариф и расписание";
+    private bool _useIndividualGpuOverclock;
+    private bool _syncingPerGpuRows;
+    private double _autoTuneProgressPercent;
+    private string _autoTuneProgressText = string.Empty;
+    private double? _gpu0EffectiveTemp;
+    private double? _gpu1EffectiveTemp;
+    private string _logSearchQuery = string.Empty;
+    private bool _logOnlyWarningsAndErrors;
+    private bool _logAutoScrollEnabled = true;
+    private bool _diagAdminOk;
+    private string _diagAdminText = "Проверка…";
+    private bool _diagNvmlOk;
+    private string _diagNvmlText = "Проверка…";
+    private bool _diagMinerExeOk;
+    private string _diagMinerExeText = "Проверка…";
+    private bool _diagAutoStartOk;
+    private string _diagAutoStartText = "Проверка…";
+    private bool _diagTdrOk = true;
+    private string _diagTdrText = "Нет недавних сбросов";
 
     public MainViewModel(
         TelemetryService telemetry,
@@ -144,12 +188,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _telegramService = telegramService;
         _poolPingService = poolPingService;
         _config = config;
-        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 7, 3);
+        _installedVersion = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(3, 9, 0);
         _autoStartMining = config.AutoStartMining || MinerControlService.IsAutoStartTaskRegistered();
         _watchdogEnabled = config.WatchdogEnabled;
         _smartFanCurveEnabled = config.SmartFanCurveEnabled;
         _dualTariffEnabled = config.DualTariffEnabled;
         _nightScheduleEnabled = config.NightScheduleEnabled;
+        _autoRestartMinerOnOverclockChange = config.AutoRestartMinerOnOverclockChange;
+        _autoSwitchToBackupPoolOnDrop = config.AutoSwitchToBackupPoolOnDrop;
         _activePreset = string.IsNullOrWhiteSpace(config.ActivePreset) ? "Auto" : config.ActivePreset;
         _workerNameDraft = config.WorkerName;
         _coreClockDraft = SettingDraft(config.CoreClock);
@@ -161,22 +207,45 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _fanDraft = SettingDraft(config.Fan);
         _electricityRateDraft = config.ElectricityRateRubPerKwh.ToString("0.00", CultureInfo.InvariantCulture);
         _nightElectricityRateDraft = config.NightElectricityRateRubPerKwh.ToString("0.00", CultureInfo.InvariantCulture);
+        _fanCurveTempLowCDraft = config.FanCurveTempLowC.ToString(CultureInfo.InvariantCulture);
+        _fanCurveSpeedLowPctDraft = config.FanCurveSpeedLowPct.ToString(CultureInfo.InvariantCulture);
+        _fanCurveTempMidCDraft = config.FanCurveTempMidC.ToString(CultureInfo.InvariantCulture);
+        _fanCurveSpeedMidPctDraft = config.FanCurveSpeedMidPct.ToString(CultureInfo.InvariantCulture);
+        _fanCurveTempHighCDraft = config.FanCurveTempHighC.ToString(CultureInfo.InvariantCulture);
+        _fanCurveSpeedHighPctDraft = config.FanCurveSpeedHighPct.ToString(CultureInfo.InvariantCulture);
+        _fanHysteresisCDraft = config.FanHysteresisC.ToString(CultureInfo.InvariantCulture);
+        _vramTempOffsetCDraft = config.VramTempOffsetC.ToString(CultureInfo.InvariantCulture);
+        _warningTempCDraft = config.WarningTempC.ToString(CultureInfo.InvariantCulture);
+        _criticalStopTempCDraft = config.CriticalStopTempC.ToString(CultureInfo.InvariantCulture);
+        _resumeTempCDraft = config.ResumeTempC.ToString(CultureInfo.InvariantCulture);
+        _zeroHashrateRestartSecondsDraft = config.ZeroHashrateRestartSeconds.ToString(CultureInfo.InvariantCulture);
+        _poolDropSwitchThresholdCountDraft = config.PoolDropSwitchThresholdCount.ToString(CultureInfo.InvariantCulture);
+        _autoTuneStepSecondsDraft = config.AutoTuneStepSeconds.ToString(CultureInfo.InvariantCulture);
+        _dayTariffStartHourDraft = config.DayTariffStartHour.ToString(CultureInfo.InvariantCulture);
+        _nightTariffStartHourDraft = config.NightTariffStartHour.ToString(CultureInfo.InvariantCulture);
+        _daySchedulePreset = config.DaySchedulePreset;
+        _nightSchedulePreset = config.NightSchedulePreset;
+        _primaryPoolDraft = config.PrimaryPool;
+        _backupPoolDraft = config.BackupPool;
         _telegramEnabled = config.TelegramEnabled;
         _telegramRemoteControlEnabled = config.TelegramRemoteControlEnabled;
         _telegramBotTokenDraft = config.TelegramBotToken;
         _telegramChatIdDraft = config.TelegramChatId;
         _telegramStatusText = _telegramEnabled && !string.IsNullOrWhiteSpace(_telegramBotTokenDraft) && !string.IsNullOrWhiteSpace(_telegramChatIdDraft)
-            ? (_telegramRemoteControlEnabled ? "Telegram: алерты и команды (/status, /preset) активны" : "Telegram-уведомления активны")
+            ? (_telegramRemoteControlEnabled ? "Telegram: алерты и команды (/status, /preset) активны (DPAPI)" : "Telegram-уведомления активны (DPAPI)")
             : "Введите токен бота и Chat ID для алертов и управления";
         _walletAddress = config.WalletAddress;
         _walletAddressDraft = config.WalletAddress;
         _walletStatus = PoolEarningsClient.IsValidWallet(config.WalletAddress) ? "Адрес выплат загружен из локального профиля" : "Введите публичный адрес PRL";
         _minerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, Math.Max(2, Gpus.Count));
 
+        RestorePersistedSession();
+
         SaveWalletCommand = new RelayCommand(() => _ = SaveWalletAsync(), () => PoolEarningsClient.IsValidWallet(WalletAddressDraft));
         RefreshCommand = new RelayCommand(() => _ = RefreshAsync(force: true));
         StartMinerCommand = new RelayCommand(() => _ = StartMinerAsync(manual: true), () => !_isMinerBusy && !_isAutoTuning && !_minerControl.IsRunning);
         StopMinerCommand = new RelayCommand(() => _ = StopMinerAsync(manual: true), () => !_isMinerBusy && !_isAutoTuning && _minerControl.IsRunning);
+        RestartMinerNowCommand = new RelayCommand(() => _ = RestartMinerAsync(), () => !_isMinerBusy && !_isAutoTuning && _minerControl.IsRunning);
         ToggleMinerModeCommand = new RelayCommand(() => _ = ToggleMinerModeAsync(), () => !_isMinerBusy);
         ToggleWatchdogCommand = new RelayCommand(() => _ = ToggleWatchdogAsync(), () => !_isMinerBusy);
         ToggleSmartFanCurveCommand = new RelayCommand(() => _ = ToggleSmartFanCurveAsync(), () => !_isMinerBusy);
@@ -184,6 +253,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ToggleNightScheduleCommand = new RelayCommand(() => _ = ToggleNightScheduleAsync(), () => !_isMinerBusy);
         RunAutoTuneBenchmarkCommand = new RelayCommand(() => _ = RunAutoTuneBenchmarkAsync(), () => !_isMinerBusy && !_isAutoTuning && _minerControl.IsRunning);
         ExportCsvReportCommand = new RelayCommand(() => _ = ExportCsvReportAsync());
+        OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         PresetAutoCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Auto"), () => !_isMinerBusy && !_isAutoTuning);
         PresetEcoCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Eco"), () => !_isMinerBusy && !_isAutoTuning);
         PresetBalanceCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Balance"), () => !_isMinerBusy && !_isAutoTuning);
@@ -191,25 +261,40 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PresetSilentCommand = new RelayCommand(() => _ = ApplyPresetAndSaveAsync("Silent"), () => !_isMinerBusy && !_isAutoTuning);
         ApplyPowerLimitNowCommand = new RelayCommand(() => _ = ApplySliderPowerLimitAsync(), () => !_isMinerBusy && !_isAutoTuning);
         SaveMinerSettingsCommand = new RelayCommand(() => _ = SaveMinerSettingsAsync(), CanSaveMinerSettings);
+        SaveFanCurveCommand = new RelayCommand(() => _ = SaveFanCurveSettingsAsync(), () => !_isMinerBusy);
+        SaveWatchdogAndScheduleCommand = new RelayCommand(() => _ = SaveWatchdogAndScheduleSettingsAsync(), () => !_isMinerBusy);
         SaveTelegramCommand = new RelayCommand(() => _ = SaveTelegramSettingsAsync());
         TestTelegramCommand = new RelayCommand(() => _ = TestTelegramAsync());
         CopyCommandLineCommand = new RelayCommand(CopyCommandLineToClipboard);
         UpdateCommand = new RelayCommand(() => _ = UpdateOrCheckAsync(), () => !_isCheckingUpdate && !_isDownloadingUpdate);
+        DismissToastCommand = new RelayCommand(DismissToast);
+        SwitchPoolManuallyCommand = new RelayCommand(() => _ = SwitchPoolManuallyAsync(), () => !_isMinerBusy && !_isAutoTuning);
+        PingPoolsNowCommand = new RelayCommand(() => _ = PingPoolsNowAsync());
+        ClearWatchdogLogCommand = new RelayCommand(ClearWatchdogLog);
+        CopyLogsCommand = new RelayCommand(CopyFilteredLogsToClipboard);
+        RunDiagnosticsNowCommand = new RelayCommand(() => _ = RunDiagnosticsCheckAsync());
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _timer.Tick += async (_, _) => await RefreshAsync();
         AppendWatchdogEvent($"Система v{_installedVersion.ToString(3)} инициализирована (предупреждение {_config.WarningTempC} °C, стоп {_config.CriticalStopTempC} °C, возврат {_config.ResumeTempC} °C).");
+        RefreshSchedulePreview();
+        UpdateDiagnosticFlagsCore(tdrEvent: null);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    public event Action<string>? InstallerDownloaded;
+    public event Action<string, string?>? InstallerDownloaded;
     public event Action<string, TrayHealthState>? TrayStatusChanged;
 
     public ObservableCollection<GpuLiveMetrics> Gpus { get; } = [];
+    public ObservableCollection<AutoTuneStepResult> AutoTuneSteps { get; } = [];
+    public ObservableCollection<GpuOverclockRowEditor> GpuOverclockRows { get; } = [];
+    public IReadOnlyList<string> AvailableSchedulePresets { get; } = ["Auto", "Eco", "Balance", "Turbo", "Silent"];
+
     public RelayCommand RefreshCommand { get; }
     public RelayCommand SaveWalletCommand { get; }
     public RelayCommand StartMinerCommand { get; }
     public RelayCommand StopMinerCommand { get; }
+    public RelayCommand RestartMinerNowCommand { get; }
     public RelayCommand ToggleMinerModeCommand { get; }
     public RelayCommand ToggleWatchdogCommand { get; }
     public RelayCommand ToggleSmartFanCurveCommand { get; }
@@ -217,6 +302,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public RelayCommand ToggleNightScheduleCommand { get; }
     public RelayCommand RunAutoTuneBenchmarkCommand { get; }
     public RelayCommand ExportCsvReportCommand { get; }
+    public RelayCommand OpenLogsFolderCommand { get; }
     public RelayCommand PresetAutoCommand { get; }
     public RelayCommand PresetEcoCommand { get; }
     public RelayCommand PresetBalanceCommand { get; }
@@ -224,20 +310,37 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public RelayCommand PresetSilentCommand { get; }
     public RelayCommand ApplyPowerLimitNowCommand { get; }
     public RelayCommand SaveMinerSettingsCommand { get; }
+    public RelayCommand SaveFanCurveCommand { get; }
+    public RelayCommand SaveWatchdogAndScheduleCommand { get; }
     public RelayCommand SaveTelegramCommand { get; }
     public RelayCommand TestTelegramCommand { get; }
     public RelayCommand CopyCommandLineCommand { get; }
     public RelayCommand UpdateCommand { get; }
+    public RelayCommand DismissToastCommand { get; }
+    public RelayCommand SwitchPoolManuallyCommand { get; }
+    public RelayCommand PingPoolsNowCommand { get; }
+    public RelayCommand ClearWatchdogLogCommand { get; }
+    public RelayCommand CopyLogsCommand { get; }
+    public RelayCommand RunDiagnosticsNowCommand { get; }
 
     public void SetUpdateStatus(string message) => UpdateStatusText = message;
 
     public bool MinimizeToTray => _config.MinimizeToTray;
     public string ConnectionStatus { get => _connectionStatus; private set => Set(ref _connectionStatus, value); }
+    public string ConnectionHealthLevel { get => _connectionHealthLevel; private set => Set(ref _connectionHealthLevel, value); }
     public string MinerApiStatus { get => _minerApiStatus; private set => Set(ref _minerApiStatus, value); }
     public string HardwareStatus { get => _hardwareStatus; private set => Set(ref _hardwareStatus, value); }
     public string PoolStatus { get => _poolStatus; private set => Set(ref _poolStatus, value); }
+    public string PoolConnectedState { get => _poolConnectedState; private set => Set(ref _poolConnectedState, value); }
     public string PoolUrl { get => _poolUrl; private set => Set(ref _poolUrl, value); }
     public string PoolPingText { get => _poolPingText; private set => Set(ref _poolPingText, value); }
+    public string ActivePoolBadgeText => _minerControl.UseBackupPool ? "АКТИВЕН РЕЗЕРВ (EU)" : "АКТИВЕН ОСНОВНОЙ (RU)";
+    public string ToastMessage { get => _toastMessage; private set { if (Set(ref _toastMessage, value)) OnPropertyChanged(nameof(HasToast)); } }
+    public string ToastSeverity { get => _toastSeverity; private set => Set(ref _toastSeverity, value); }
+    public bool HasToast => !string.IsNullOrWhiteSpace(_toastMessage);
+    public string DailyNetProfitKpiText { get => _dailyNetProfitKpiText; private set => Set(ref _dailyNetProfitKpiText, value); }
+    public string DailyElectricityKpiText { get => _dailyElectricityKpiText; private set => Set(ref _dailyElectricityKpiText, value); }
+    public string PayoutEtaText { get => _payoutEtaText; private set => Set(ref _payoutEtaText, value); }
     public string TotalHashrate { get => _totalHashrate; private set => Set(ref _totalHashrate, value); }
     public string TotalEfficiency { get => _totalEfficiency; private set => Set(ref _totalEfficiency, value); }
     public string ElectricitySummaryText { get => _electricitySummaryText; private set => Set(ref _electricitySummaryText, value); }
@@ -286,12 +389,78 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string DualTariffButtonLabel => DualTariffEnabled ? "ТАРИФ: ДЕНЬ/НОЧЬ" : "ТАРИФ: ЕДИНЫЙ";
     public bool NightScheduleEnabled { get => _nightScheduleEnabled; private set { if (Set(ref _nightScheduleEnabled, value)) OnPropertyChanged(nameof(NightScheduleButtonLabel)); } }
     public string NightScheduleButtonLabel => NightScheduleEnabled ? "РАСПИСАНИЕ: ВКЛ" : "РАСПИСАНИЕ: ВЫКЛ";
+    public bool AutoRestartMinerOnOverclockChange { get => _autoRestartMinerOnOverclockChange; set => Set(ref _autoRestartMinerOnOverclockChange, value); }
+    public bool AutoSwitchToBackupPoolOnDrop { get => _autoSwitchToBackupPoolOnDrop; set => Set(ref _autoSwitchToBackupPoolOnDrop, value); }
     public string AutoTuneButtonLabel => _isAutoTuning ? "АВТО-ПОДБОР…" : "АВТО-ПОДБОР GH/W";
+    public bool IsAutoTuning => _isAutoTuning;
+    public bool HasAutoTuneResults => AutoTuneSteps.Count > 0;
+    public double AutoTuneProgressPercent { get => _autoTuneProgressPercent; private set => Set(ref _autoTuneProgressPercent, value); }
+    public string AutoTuneProgressText { get => _autoTuneProgressText; private set => Set(ref _autoTuneProgressText, value); }
+    public bool UseIndividualGpuOverclock
+    {
+        get => _useIndividualGpuOverclock;
+        set
+        {
+            if (!Set(ref _useIndividualGpuOverclock, value)) return;
+            if (value) SyncOverclockRowsFromDrafts();
+        }
+    }
     public string ActivePreset { get => _activePreset; private set { if (Set(ref _activePreset, value)) OnPropertyChanged(nameof(ActivePresetLabel)); } }
     public string ActivePresetLabel => $"ПРОФИЛЬ: {_activePreset.ToUpperInvariant()}";
     public string WatchdogStatusText { get => _watchdogStatusText; private set => Set(ref _watchdogStatusText, value); }
-    public string WatchdogEventsText { get => _watchdogEventsText; private set => Set(ref _watchdogEventsText, value); }
-    public string MinerLogTail { get => _minerLogTail; private set => Set(ref _minerLogTail, value); }
+    public string WatchdogEventsText
+    {
+        get => _watchdogEventsText;
+        private set
+        {
+            if (Set(ref _watchdogEventsText, value))
+                OnPropertyChanged(nameof(FilteredWatchdogEventsText));
+        }
+    }
+    public string MinerLogTail
+    {
+        get => _minerLogTail;
+        private set
+        {
+            if (Set(ref _minerLogTail, value))
+                OnPropertyChanged(nameof(FilteredMinerLogTail));
+        }
+    }
+    public string AppLogTail
+    {
+        get => _appLogTail;
+        private set
+        {
+            if (Set(ref _appLogTail, value))
+                OnPropertyChanged(nameof(FilteredAppLogTail));
+        }
+    }
+    public string LogSearchQuery
+    {
+        get => _logSearchQuery;
+        set
+        {
+            if (!Set(ref _logSearchQuery, value)) return;
+            OnPropertyChanged(nameof(FilteredMinerLogTail));
+            OnPropertyChanged(nameof(FilteredWatchdogEventsText));
+            OnPropertyChanged(nameof(FilteredAppLogTail));
+        }
+    }
+    public bool LogOnlyWarningsAndErrors
+    {
+        get => _logOnlyWarningsAndErrors;
+        set
+        {
+            if (!Set(ref _logOnlyWarningsAndErrors, value)) return;
+            OnPropertyChanged(nameof(FilteredMinerLogTail));
+            OnPropertyChanged(nameof(FilteredWatchdogEventsText));
+            OnPropertyChanged(nameof(FilteredAppLogTail));
+        }
+    }
+    public bool LogAutoScrollEnabled { get => _logAutoScrollEnabled; set => Set(ref _logAutoScrollEnabled, value); }
+    public string FilteredMinerLogTail => FilterLogText(MinerLogTail);
+    public string FilteredWatchdogEventsText => FilterLogText(WatchdogEventsText);
+    public string FilteredAppLogTail => FilterLogText(AppLogTail);
     public string MinerCommandLinePreview { get => _minerCommandLinePreview; private set => Set(ref _minerCommandLinePreview, value); }
 
     public string WorkerNameDraft
@@ -313,6 +482,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!Set(ref _coreClockDraft, value)) return;
             SaveMinerSettingsCommand.NotifyCanExecuteChanged();
             UpdateCommandLinePreviewFromDrafts();
+            SyncOverclockRowsFromDrafts();
         }
     }
 
@@ -324,6 +494,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!Set(ref _memoryClockDraft, value)) return;
             SaveMinerSettingsCommand.NotifyCanExecuteChanged();
             UpdateCommandLinePreviewFromDrafts();
+            SyncOverclockRowsFromDrafts();
         }
     }
 
@@ -347,6 +518,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     Set(ref _powerSliderValue, Math.Clamp(Math.Round(d), PowerSliderMinimum, PowerSliderMaximum), nameof(PowerSliderValue));
             }
             UpdateCommandLinePreviewFromDrafts();
+            SyncOverclockRowsFromDrafts();
         }
     }
 
@@ -381,6 +553,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!Set(ref _kernelDraft, value)) return;
             SaveMinerSettingsCommand.NotifyCanExecuteChanged();
             UpdateCommandLinePreviewFromDrafts();
+            SyncOverclockRowsFromDrafts();
         }
     }
 
@@ -392,16 +565,65 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!Set(ref _fanDraft, value)) return;
             SaveMinerSettingsCommand.NotifyCanExecuteChanged();
             UpdateCommandLinePreviewFromDrafts();
+            SyncOverclockRowsFromDrafts();
         }
     }
 
-    public string ElectricityRateDraft { get => _electricityRateDraft; set { if (Set(ref _electricityRateDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
-    public string NightElectricityRateDraft { get => _nightElectricityRateDraft; set { if (Set(ref _nightElectricityRateDraft, value)) SaveMinerSettingsCommand.NotifyCanExecuteChanged(); } }
+    public string ElectricityRateDraft { get => _electricityRateDraft; set { if (Set(ref _electricityRateDraft, value)) { SaveMinerSettingsCommand.NotifyCanExecuteChanged(); RefreshSchedulePreview(); } } }
+    public string NightElectricityRateDraft { get => _nightElectricityRateDraft; set { if (Set(ref _nightElectricityRateDraft, value)) { SaveMinerSettingsCommand.NotifyCanExecuteChanged(); RefreshSchedulePreview(); } } }
+
+    public string FanCurveTempLowCDraft { get => _fanCurveTempLowCDraft; set { if (Set(ref _fanCurveTempLowCDraft, value)) NotifyFanCurveChanged(); } }
+    public string FanCurveSpeedLowPctDraft { get => _fanCurveSpeedLowPctDraft; set { if (Set(ref _fanCurveSpeedLowPctDraft, value)) NotifyFanCurveChanged(); } }
+    public string FanCurveTempMidCDraft { get => _fanCurveTempMidCDraft; set { if (Set(ref _fanCurveTempMidCDraft, value)) NotifyFanCurveChanged(); } }
+    public string FanCurveSpeedMidPctDraft { get => _fanCurveSpeedMidPctDraft; set { if (Set(ref _fanCurveSpeedMidPctDraft, value)) NotifyFanCurveChanged(); } }
+    public string FanCurveTempHighCDraft { get => _fanCurveTempHighCDraft; set { if (Set(ref _fanCurveTempHighCDraft, value)) NotifyFanCurveChanged(); } }
+    public string FanCurveSpeedHighPctDraft { get => _fanCurveSpeedHighPctDraft; set { if (Set(ref _fanCurveSpeedHighPctDraft, value)) NotifyFanCurveChanged(); } }
+    public string FanHysteresisCDraft { get => _fanHysteresisCDraft; set { if (Set(ref _fanHysteresisCDraft, value)) NotifyFanCurveChanged(); } }
+    public string VramTempOffsetCDraft { get => _vramTempOffsetCDraft; set { if (Set(ref _vramTempOffsetCDraft, value)) NotifyFanCurveChanged(); } }
+
+    public double FanCurveTempLowValue => TryParseDoubleOrFallback(FanCurveTempLowCDraft, _config.FanCurveTempLowC);
+    public double FanCurveSpeedLowValue => TryParseDoubleOrFallback(FanCurveSpeedLowPctDraft, _config.FanCurveSpeedLowPct);
+    public double FanCurveTempMidValue => TryParseDoubleOrFallback(FanCurveTempMidCDraft, _config.FanCurveTempMidC);
+    public double FanCurveSpeedMidValue => TryParseDoubleOrFallback(FanCurveSpeedMidPctDraft, _config.FanCurveSpeedMidPct);
+    public double FanCurveTempHighValue => TryParseDoubleOrFallback(FanCurveTempHighCDraft, _config.FanCurveTempHighC);
+    public double FanCurveSpeedHighValue => TryParseDoubleOrFallback(FanCurveSpeedHighPctDraft, _config.FanCurveSpeedHighPct);
+    public double? Gpu0EffectiveTemp { get => _gpu0EffectiveTemp; private set => Set(ref _gpu0EffectiveTemp, value); }
+    public double? Gpu1EffectiveTemp { get => _gpu1EffectiveTemp; private set => Set(ref _gpu1EffectiveTemp, value); }
+    public string FanCurveValidationError => ValidateFanCurveDrafts();
+
+    public string WarningTempCDraft { get => _warningTempCDraft; set { if (Set(ref _warningTempCDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string CriticalStopTempCDraft { get => _criticalStopTempCDraft; set { if (Set(ref _criticalStopTempCDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string ResumeTempCDraft { get => _resumeTempCDraft; set { if (Set(ref _resumeTempCDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string ZeroHashrateRestartSecondsDraft { get => _zeroHashrateRestartSecondsDraft; set { if (Set(ref _zeroHashrateRestartSecondsDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string PoolDropSwitchThresholdCountDraft { get => _poolDropSwitchThresholdCountDraft; set { if (Set(ref _poolDropSwitchThresholdCountDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string AutoTuneStepSecondsDraft { get => _autoTuneStepSecondsDraft; set { if (Set(ref _autoTuneStepSecondsDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string DayTariffStartHourDraft { get => _dayTariffStartHourDraft; set { if (Set(ref _dayTariffStartHourDraft, value)) { OnPropertyChanged(nameof(DayTariffStartHourValue)); OnPropertyChanged(nameof(WatchdogValidationError)); RefreshSchedulePreview(); } } }
+    public string NightTariffStartHourDraft { get => _nightTariffStartHourDraft; set { if (Set(ref _nightTariffStartHourDraft, value)) { OnPropertyChanged(nameof(NightTariffStartHourValue)); OnPropertyChanged(nameof(WatchdogValidationError)); RefreshSchedulePreview(); } } }
+    public int DayTariffStartHourValue => int.TryParse(DayTariffStartHourDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var h) ? Math.Clamp(h, 0, 23) : _config.DayTariffStartHour;
+    public int NightTariffStartHourValue => int.TryParse(NightTariffStartHourDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var h) ? Math.Clamp(h, 0, 23) : _config.NightTariffStartHour;
+    public string CurrentScheduleStatusText { get => _currentScheduleStatusText; private set => Set(ref _currentScheduleStatusText, value); }
+    public string WatchdogValidationError => ValidateWatchdogDrafts();
+    public string DaySchedulePreset { get => _daySchedulePreset; set { if (Set(ref _daySchedulePreset, value)) RefreshSchedulePreview(); } }
+    public string NightSchedulePreset { get => _nightSchedulePreset; set { if (Set(ref _nightSchedulePreset, value)) RefreshSchedulePreview(); } }
+    public string PrimaryPoolDraft { get => _primaryPoolDraft; set { if (Set(ref _primaryPoolDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+    public string BackupPoolDraft { get => _backupPoolDraft; set { if (Set(ref _backupPoolDraft, value)) OnPropertyChanged(nameof(WatchdogValidationError)); } }
+
     public bool TelegramEnabled { get => _telegramEnabled; set => Set(ref _telegramEnabled, value); }
     public bool TelegramRemoteControlEnabled { get => _telegramRemoteControlEnabled; set => Set(ref _telegramRemoteControlEnabled, value); }
-    public string TelegramBotTokenDraft { get => _telegramBotTokenDraft; set => Set(ref _telegramBotTokenDraft, value); }
+    public string TelegramBotTokenDraft { get => _telegramBotTokenDraft; set { if (Set(ref _telegramBotTokenDraft, value)) OnPropertyChanged(nameof(HasSavedTelegramToken)); } }
+    public bool HasSavedTelegramToken => !string.IsNullOrWhiteSpace(_telegramBotTokenDraft);
     public string TelegramChatIdDraft { get => _telegramChatIdDraft; set => Set(ref _telegramChatIdDraft, value); }
     public string TelegramStatusText { get => _telegramStatusText; private set => Set(ref _telegramStatusText, value); }
+    public bool DiagAdminOk { get => _diagAdminOk; private set => Set(ref _diagAdminOk, value); }
+    public string DiagAdminText { get => _diagAdminText; private set => Set(ref _diagAdminText, value); }
+    public bool DiagNvmlOk { get => _diagNvmlOk; private set => Set(ref _diagNvmlOk, value); }
+    public string DiagNvmlText { get => _diagNvmlText; private set => Set(ref _diagNvmlText, value); }
+    public bool DiagMinerExeOk { get => _diagMinerExeOk; private set => Set(ref _diagMinerExeOk, value); }
+    public string DiagMinerExeText { get => _diagMinerExeText; private set => Set(ref _diagMinerExeText, value); }
+    public bool DiagAutoStartOk { get => _diagAutoStartOk; private set => Set(ref _diagAutoStartOk, value); }
+    public string DiagAutoStartText { get => _diagAutoStartText; private set => Set(ref _diagAutoStartText, value); }
+    public bool DiagTdrOk { get => _diagTdrOk; private set => Set(ref _diagTdrOk, value); }
+    public string DiagTdrText { get => _diagTdrText; private set => Set(ref _diagTdrText, value); }
     public bool HasNoGpus => Gpus.Count == 0;
     public string GpuCountLabel => !_gpuDiscoveryCompleted ? "Поиск видеокарт…" : Gpus.Count == 0 ? "GPU не обнаружены" : $"Обнаружено GPU: {Gpus.Count}";
     public double MaxGpuHashrateTHs => Math.Max(1, Gpus.Where(gpu => gpu.HashrateTHs is not null).Select(gpu => gpu.HashrateTHs!.Value).DefaultIfEmpty(1).Max() * 1.25);
@@ -414,6 +636,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string UpdateButtonText => _isDownloadingUpdate
         ? $"v{_installedVersion.ToString(3)} · {UpdateProgress:0}%"
         : _availableUpdate is not null ? $"v{_installedVersion.ToString(3)} · ОБНОВИТЬ" : $"v{_installedVersion.ToString(3)} · ПРОВЕРИТЬ";
+
+    private void RestorePersistedSession()
+    {
+        var saved = SessionStateService.Load();
+        if (saved is null) return;
+
+        _profitability.RestoreSessionEnergy(saved.SessionEnergyKwh, saved.SessionElectricityCostRub);
+        foreach (var sample in saved.TotalHashrateHistory.TakeLast(MaxHistorySamples))
+        {
+            if (double.IsFinite(sample) && sample >= 0)
+                _totalHashrateBuffer.Add(sample);
+        }
+        TotalHashrateHistory = _totalHashrateBuffer.ToArray();
+
+        foreach (var evt in saved.WatchdogEvents.TakeLast(35))
+        {
+            if (!string.IsNullOrWhiteSpace(evt))
+                _watchdogEvents.Add(evt);
+        }
+        if (_watchdogEvents.Count > 0)
+            WatchdogEventsText = string.Join(Environment.NewLine, Enumerable.Reverse(_watchdogEvents));
+    }
 
     public void Start(bool launchedWithAutoMineArg = false)
     {
@@ -532,11 +776,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _config = _config with { DualTariffEnabled = enabled };
         await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
         DualTariffEnabled = enabled;
+        RefreshSchedulePreview();
         var msg = enabled
             ? $"Включён двухтарифный учёт (День {_config.DayTariffStartHour:00}:00–{_config.NightTariffStartHour:00}:00 · Ночь {_config.NightTariffStartHour:00}:00–{_config.DayTariffStartHour:00}:00)"
             : "Включён единый круглосуточный тариф электроэнергии";
         MinerControlStatus = msg;
         AppendWatchdogEvent(msg);
+        ShowToast(msg, "Info");
     }
 
     private async Task ToggleNightScheduleAsync()
@@ -546,11 +792,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
         NightScheduleEnabled = enabled;
         _lastScheduledWindowApplied = null;
+        RefreshSchedulePreview();
         var msg = enabled
             ? $"Авто-расписание День/Ночь включено (День → {_config.DaySchedulePreset}, Ночь → {_config.NightSchedulePreset})"
             : "Авто-расписание профилей День/Ночь отключено";
         MinerControlStatus = msg;
         AppendWatchdogEvent(msg);
+        ShowToast(msg, "Info");
     }
 
     private async Task EvaluateDayNightScheduleAsync()
@@ -575,38 +823,52 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task RunAutoTuneBenchmarkAsync()
     {
         if (_isAutoTuning || _isMinerBusy || !_minerControl.IsRunning) return;
-        var nvidiaCount = Gpus.Count(IsNvidiaGpu);
-        if (nvidiaCount == 0)
+        var nvidiaGpus = Gpus.Where(IsNvidiaGpu).ToArray();
+        if (nvidiaGpus.Length == 0)
         {
             MinerControlStatus = "Авто-подбор требует активные видеокарты NVIDIA и запущенный майнер.";
+            ShowToast(MinerControlStatus, "Warning");
             return;
         }
 
         _isAutoTuning = true;
+        AutoTuneSteps.Clear();
+        AutoTuneProgressPercent = 0;
+        AutoTuneProgressText = "Подготовка ступеней энергопотребления…";
+        OnPropertyChanged(nameof(IsAutoTuning));
+        OnPropertyChanged(nameof(HasAutoTuneResults));
         OnPropertyChanged(nameof(AutoTuneButtonLabel));
         UpdateMinerState();
 
         var minW = (int)Math.Ceiling(PowerSliderMinimum);
         var maxW = (int)Math.Floor(PowerSliderMaximum);
-        var candidates = new[] { 130, 140, 150, 165, 180 }
+        var defaultW = (int)Math.Round(nvidiaGpus[0].DefaultPowerLimitWatts ?? maxW);
+        var spanTop = Math.Min(maxW, Math.Max(minW + 20, defaultW));
+        var candidates = Enumerable.Range(0, 5)
+            .Select(step => minW + (int)Math.Round((spanTop - minW) * (0.20 + step * 0.18)))
             .Select(w => minW <= maxW ? Math.Clamp(w, minW, maxW) : w)
             .Distinct()
             .Order()
             .ToArray();
 
-        AppendWatchdogEvent($"Старт авто-бенчмарка «Золотая точка» GH/W по ступеням: {string.Join(", ", candidates.Select(c => $"{c} Вт"))}");
+        var settleSeconds = Math.Clamp(_config.AutoTuneStepSeconds, 20, 120);
+        AppendWatchdogEvent($"Старт авто-бенчмарка GH/W (шаг {settleSeconds} с): {string.Join(", ", candidates.Select(c => $"{c} Вт"))}");
         var bestWatts = candidates[0];
         var bestEfficiency = 0d;
         var token = _lifetime?.Token ?? CancellationToken.None;
 
         try
         {
-            foreach (var candidateW in candidates)
+            for (var idx = 0; idx < candidates.Length; idx++)
             {
-                var limitStr = string.Join(',', Enumerable.Repeat(candidateW.ToString(CultureInfo.InvariantCulture), nvidiaCount));
-                MinerControlStatus = $"Авто-подбор: проверка {candidateW} Вт (стабилизация 18 с)…";
+                var candidateW = candidates[idx];
+                var stepNum = idx + 1;
+                AutoTuneProgressPercent = Math.Round((idx / (double)candidates.Length) * 100d);
+                AutoTuneProgressText = $"Шаг {stepNum} из {candidates.Length} · Тест {candidateW} Вт (стабилизация {settleSeconds} с)…";
+                var limitStr = string.Join(',', Enumerable.Repeat(candidateW.ToString(CultureInfo.InvariantCulture), nvidiaGpus.Length));
+                MinerControlStatus = AutoTuneProgressText;
                 await _nvidiaSmi.ApplyPowerLimitsAsync(limitStr, token);
-                await Task.Delay(TimeSpan.FromSeconds(18), token);
+                await Task.Delay(TimeSpan.FromSeconds(settleSeconds), token);
 
                 var snap = await _telemetry.ReadAsync(token);
                 Apply(snap);
@@ -616,38 +878,51 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 var maxTemp = snap.Gpus.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty(0).Max();
                 var eff = hashrate > 0 && power > 0 ? (hashrate * 1000d) / power : 0;
 
-                var stepResult = $"Ступень {candidateW} Вт → {hashrate:0.00} TH/s · {power:0} Вт · {eff:0.00} GH/W · макс {maxTemp:0} °C";
-                AppendWatchdogEvent(stepResult);
-
-                if (eff > bestEfficiency && maxTemp < _config.WarningTempC)
+                var isNewBest = eff > bestEfficiency && maxTemp < _config.WarningTempC;
+                if (isNewBest)
                 {
                     bestEfficiency = eff;
                     bestWatts = candidateW;
+                    for (var j = 0; j < AutoTuneSteps.Count; j++)
+                        AutoTuneSteps[j] = AutoTuneSteps[j] with { IsBest = false };
                 }
+
+                AutoTuneSteps.Add(new AutoTuneStepResult(stepNum, candidateW, hashrate, power, eff, maxTemp, isNewBest));
+                OnPropertyChanged(nameof(HasAutoTuneResults));
+
+                var stepResult = $"Ступень {candidateW} Вт → {hashrate:0.00} TH/s · {power:0} Вт · {eff:0.00} GH/W · макс {maxTemp:0} °C";
+                AppendWatchdogEvent(stepResult);
             }
 
-            PowerLimitDraft = string.Join(',', Enumerable.Repeat(bestWatts.ToString(CultureInfo.InvariantCulture), nvidiaCount));
+            AutoTuneProgressPercent = 100;
+            AutoTuneProgressText = $"Готово: оптимальный лимит {bestWatts} Вт ({bestEfficiency:0.00} GH/W)";
+            PowerLimitDraft = string.Join(',', Enumerable.Repeat(bestWatts.ToString(CultureInfo.InvariantCulture), nvidiaGpus.Length));
             ActivePreset = $"Tuned-{bestWatts}W";
             await SaveMinerSettingsAsync();
 
             var summary = $"Авто-бенчмарк завершён: выбрана золотая точка {bestWatts} Вт ({bestEfficiency:0.00} GH/W).";
             MinerControlStatus = summary;
             AppendWatchdogEvent(summary);
+            ShowToast(summary, "Success", 7);
             await RecordCsvSnapshotAsync(summary);
             await SendTelegramAlertIfEnabledAsync($"🏆 {summary}");
         }
         catch (OperationCanceledException)
         {
             MinerControlStatus = "Авто-подбор энергоэффективности отменён.";
+            AutoTuneProgressText = "Бенчмарк отменён";
         }
         catch (Exception ex)
         {
             MinerControlStatus = $"Ошибка авто-подбора: {ex.Message}";
+            AutoTuneProgressText = MinerControlStatus;
             AppendWatchdogEvent($"Авто-бенчмарк прерван: {ex.Message}");
+            ShowToast(MinerControlStatus, "Error");
         }
         finally
         {
             _isAutoTuning = false;
+            OnPropertyChanged(nameof(IsAutoTuning));
             OnPropertyChanged(nameof(AutoTuneButtonLabel));
             UpdateMinerState();
         }
@@ -667,6 +942,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private static void OpenLogsFolder()
+    {
+        try
+        {
+            var path = AppLogger.GetLogFilePath();
+            if (File.Exists(path))
+            {
+                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = $"/select,\"{path}\"", UseShellExecute = true });
+            }
+            else
+            {
+                var dir = Path.GetDirectoryName(path)!;
+                Directory.CreateDirectory(dir);
+                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = $"\"{dir}\"", UseShellExecute = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn($"Не удалось открыть папку логов: {ex.Message}");
+        }
+    }
+
     private async Task RecordCsvSnapshotAsync(string eventNote)
     {
         try
@@ -680,12 +977,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 _lastEfficiencyGhPerWatt,
                 maxCore > 0 ? maxCore : null,
                 maxVram > 0 ? maxVram : null,
-                _sessionEnergyKwh,
+                _profitability.SessionEnergyKwh,
                 _config.GetActiveElectricityTariff(DateTime.Now),
                 _lastKnownTotalPrl,
                 _lastKnownPaidPrl,
                 _lastKnownPrlRubRate,
-                _lastObservedNetRubPerDay,
+                _profitability.LastObservedNetRubPerDay,
                 eventNote);
             await TelemetryHistoryCsvService.AppendEntryAsync(entry, _lifetime?.Token ?? CancellationToken.None);
             _lastCsvSnapshotAt = DateTimeOffset.UtcNow;
@@ -716,6 +1013,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (_watchdogEvents.Count > 35)
             _watchdogEvents.RemoveAt(0);
         WatchdogEventsText = string.Join(Environment.NewLine, Enumerable.Reverse(_watchdogEvents));
+        AppLogger.Info(message);
     }
 
     private async Task SendTelegramAlertIfEnabledAsync(string message, bool bypassCooldown = false)
@@ -771,9 +1069,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     break;
 
                 case "/reboot_miner":
-                    await StopMinerAsync(manual: false);
-                    await Task.Delay(1500, token);
-                    await StartMinerAsync(manual: true);
+                    await RestartMinerAsync();
                     await SendTelegramAlertIfEnabledAsync("🔄 Команда /reboot_miner выполнена: майнер перезапущен.", bypassCooldown: true);
                     break;
 
@@ -824,8 +1120,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             TelegramStatusText = TelegramEnabled
                 ? (TelegramRemoteControlEnabled
-                    ? "Telegram сохранён (уведомления и команды /status, /preset, /start_miner активны)"
-                    : "Настройки Telegram сохранены в локальном профиле")
+                    ? "Telegram зашифрован (DPAPI) и активен (/status, /preset, /start_miner)"
+                    : "Настройки Telegram зашифрованы (DPAPI) и сохранены")
                 : "Настройки сохранены (отправка отключена)";
         }
         catch (Exception ex)
@@ -861,12 +1157,129 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _config = _config with { SmartFanCurveEnabled = enabled };
         await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
         SmartFanCurveEnabled = enabled;
-        _lastSmartFanApplied.Clear();
-        var msg = enabled
-            ? "Умная кривая кулеров включена (регулировка по пику Ядро/GDDR6X с гистерезисом 3 °C)"
-            : "Умная кривая кулеров отключена";
+        _smartFanController.ResetState();
+        if (!enabled && Gpus.Count > 0)
+        {
+            var resetOk = _nvidiaSmi.TryResetFansToAutoDirect(Gpus.Where(IsNvidiaGpu).Select(g => g.Id));
+            AppendWatchdogEvent(resetOk
+                ? "Умная кривая кулеров отключена; вентиляторы возвращены в авто-режим VBIOS."
+                : "Умная кривая кулеров отключена.");
+        }
+        else
+        {
+            AppendWatchdogEvent($"Умная кривая кулеров включена (гистерезис {_config.FanHysteresisC} °C, сдвиг GDDR6X {_config.VramTempOffsetC} °C).");
+        }
+        MinerControlStatus = enabled
+            ? "Умная кривая кулеров активна"
+            : "Умная кривая кулеров отключена (авто VBIOS)";
+    }
+
+    private async Task SaveFanCurveSettingsAsync()
+    {
+        if (!int.TryParse(FanCurveTempLowCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tLow)
+            || !int.TryParse(FanCurveSpeedLowPctDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sLow)
+            || !int.TryParse(FanCurveTempMidCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tMid)
+            || !int.TryParse(FanCurveSpeedMidPctDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sMid)
+            || !int.TryParse(FanCurveTempHighCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tHigh)
+            || !int.TryParse(FanCurveSpeedHighPctDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sHigh)
+            || !int.TryParse(FanHysteresisCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hyst)
+            || !int.TryParse(VramTempOffsetCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var vramOffset))
+        {
+            MinerControlStatus = "Проверьте числовые значения точек кривой вентиляторов.";
+            return;
+        }
+
+        _config = RigConfig.Migrate(_config with
+        {
+            FanCurveTempLowC = tLow,
+            FanCurveSpeedLowPct = sLow,
+            FanCurveTempMidC = tMid,
+            FanCurveSpeedMidPct = sMid,
+            FanCurveTempHighC = tHigh,
+            FanCurveSpeedHighPct = sHigh,
+            FanHysteresisC = hyst,
+            VramTempOffsetC = vramOffset
+        });
+
+        await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+        _smartFanController.ResetState();
+        SyncDraftsFromConfig();
+        var msg = $"Кривая кулеров сохранена: {_config.FanCurveTempLowC}°/{_config.FanCurveSpeedLowPct}% → {_config.FanCurveTempMidC}°/{_config.FanCurveSpeedMidPct}% → {_config.FanCurveTempHighC}°/{_config.FanCurveSpeedHighPct}%";
         MinerControlStatus = msg;
         AppendWatchdogEvent(msg);
+        ShowToast(msg, "Success");
+    }
+
+    private async Task SaveWatchdogAndScheduleSettingsAsync()
+    {
+        if (!string.IsNullOrEmpty(WatchdogValidationError))
+        {
+            ShowToast(WatchdogValidationError, "Warning");
+            return;
+        }
+        if (!int.TryParse(WarningTempCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var warnT)
+            || !int.TryParse(CriticalStopTempCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var critT)
+            || !int.TryParse(ResumeTempCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var resT)
+            || !int.TryParse(ZeroHashrateRestartSecondsDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var zeroSec)
+            || !int.TryParse(PoolDropSwitchThresholdCountDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var poolDropCount)
+            || !int.TryParse(AutoTuneStepSecondsDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tuneSec)
+            || !int.TryParse(DayTariffStartHourDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var dayHour)
+            || !int.TryParse(NightTariffStartHourDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var nightHour))
+        {
+            MinerControlStatus = "Проверьте числовые значения порогов Watchdog и часов тарифов.";
+            ShowToast(MinerControlStatus, "Warning");
+            return;
+        }
+
+        _config = RigConfig.Migrate(_config with
+        {
+            WarningTempC = warnT,
+            CriticalStopTempC = critT,
+            ResumeTempC = resT,
+            ZeroHashrateRestartSeconds = zeroSec,
+            AutoSwitchToBackupPoolOnDrop = AutoSwitchToBackupPoolOnDrop,
+            PoolDropSwitchThresholdCount = poolDropCount,
+            AutoTuneStepSeconds = tuneSec,
+            DayTariffStartHour = dayHour,
+            NightTariffStartHour = nightHour,
+            DaySchedulePreset = DaySchedulePreset,
+            NightSchedulePreset = NightSchedulePreset,
+            PrimaryPool = PrimaryPoolDraft,
+            BackupPool = BackupPoolDraft
+        });
+
+        await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
+        _minerControl.UpdateConfig(_config);
+        _lastScheduledWindowApplied = null;
+        SyncDraftsFromConfig();
+        RefreshSchedulePreview();
+        UpdateCommandLinePreviewFromDrafts();
+        var msg = $"Параметры Watchdog (стоп {_config.CriticalStopTempC}°C / возврат {_config.ResumeTempC}°C), расписания и пулов сохранены.";
+        MinerControlStatus = msg;
+        AppendWatchdogEvent(msg);
+        ShowToast(msg, "Success");
+    }
+
+    private void SyncDraftsFromConfig()
+    {
+        FanCurveTempLowCDraft = _config.FanCurveTempLowC.ToString(CultureInfo.InvariantCulture);
+        FanCurveSpeedLowPctDraft = _config.FanCurveSpeedLowPct.ToString(CultureInfo.InvariantCulture);
+        FanCurveTempMidCDraft = _config.FanCurveTempMidC.ToString(CultureInfo.InvariantCulture);
+        FanCurveSpeedMidPctDraft = _config.FanCurveSpeedMidPct.ToString(CultureInfo.InvariantCulture);
+        FanCurveTempHighCDraft = _config.FanCurveTempHighC.ToString(CultureInfo.InvariantCulture);
+        FanCurveSpeedHighPctDraft = _config.FanCurveSpeedHighPct.ToString(CultureInfo.InvariantCulture);
+        FanHysteresisCDraft = _config.FanHysteresisC.ToString(CultureInfo.InvariantCulture);
+        VramTempOffsetCDraft = _config.VramTempOffsetC.ToString(CultureInfo.InvariantCulture);
+        WarningTempCDraft = _config.WarningTempC.ToString(CultureInfo.InvariantCulture);
+        CriticalStopTempCDraft = _config.CriticalStopTempC.ToString(CultureInfo.InvariantCulture);
+        ResumeTempCDraft = _config.ResumeTempC.ToString(CultureInfo.InvariantCulture);
+        ZeroHashrateRestartSecondsDraft = _config.ZeroHashrateRestartSeconds.ToString(CultureInfo.InvariantCulture);
+        PoolDropSwitchThresholdCountDraft = _config.PoolDropSwitchThresholdCount.ToString(CultureInfo.InvariantCulture);
+        AutoTuneStepSecondsDraft = _config.AutoTuneStepSeconds.ToString(CultureInfo.InvariantCulture);
+        DayTariffStartHourDraft = _config.DayTariffStartHour.ToString(CultureInfo.InvariantCulture);
+        NightTariffStartHourDraft = _config.NightTariffStartHour.ToString(CultureInfo.InvariantCulture);
+        PrimaryPoolDraft = _config.PrimaryPool;
+        BackupPoolDraft = _config.BackupPool;
     }
 
     private async Task UpdateOrCheckAsync()
@@ -930,7 +1343,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var installer = await _updateService.DownloadInstallerAsync(release, progress, _lifetime?.Token ?? CancellationToken.None);
             _updateProgress = 100;
             UpdateStatusText = $"Установщик v{release.Version} загружен. Запустить его?";
-            InstallerDownloaded?.Invoke(installer);
+            InstallerDownloaded?.Invoke(installer, release.ReleaseNotes);
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex) { UpdateStatusText = $"Ошибка загрузки обновления: {ex.Message}"; }
@@ -943,13 +1356,56 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public async Task PrepareForInstallerLaunchAsync()
+    {
+        await SaveSessionStateAsync();
+        if (_minerControl.IsRunning)
+        {
+            try
+            {
+                await _minerControl.StopAsync(forceKillOnTimeout: true, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn($"Не удалось штатно остановить майнер перед обновлением: {ex.Message}");
+            }
+        }
+        WindowsDiagnosticsService.SetMiningSleepPrevention(false);
+    }
+
+    private async Task RestartMinerAsync()
+    {
+        if (!TryBeginMinerAction()) return;
+        MinerControlStatus = "Перезапуск OneZeroMiner…";
+        try
+        {
+            var token = _lifetime?.Token ?? CancellationToken.None;
+            var wallet = WalletAddressDraft.Trim().ToLowerInvariant();
+            var gpuCount = GetTargetNvidiaGpuCount();
+            await _minerControl.RestartAsync(wallet, gpuCount, token);
+            _watchdog.MarkMinerStarted(DateTimeOffset.UtcNow);
+            MinerControlStatus = "Майнер перезапущен";
+            AppendWatchdogEvent("Выполнен мягкий перезапуск OneZeroMiner.");
+            _ = RefreshAsync(force: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            MinerControlStatus = $"Ошибка перезапуска: {ex.Message}";
+            AppendWatchdogEvent($"Ошибка перезапуска майнера: {ex.Message}");
+        }
+        finally
+        {
+            EndMinerAction();
+        }
+    }
+
     private async Task StartMinerAsync(bool manual = false)
     {
         if (!TryBeginMinerAction()) return;
         if (manual)
         {
             _userManuallyStopped = false;
-            _thermalPaused = false;
+            _watchdog.ResetMinerTimers(clearThermalPause: true);
         }
         MinerControlStatus = "Запуск OneZeroMiner…";
         try
@@ -1016,8 +1472,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             WindowsDiagnosticsService.SetMiningSleepPrevention(_config.PreventSleepWhenMining);
             _config = _config with { LastKnownMiningActive = true };
             await RigConfig.SaveLocalSettingsAsync(_config, token);
-            _minerStartedOrObservedAt = DateTimeOffset.UtcNow;
-            _zeroHashrateSince = null;
+            _watchdog.MarkMinerStarted(DateTimeOffset.UtcNow);
             var unsupported = detectedGpus.Where(gpu => !IsNvidiaGpu(gpu)).Select(gpu => gpu.Name).ToArray();
             MinerControlStatus = unsupported.Length == 0
                 ? "Майнер запущен (блокировка сна Windows активна)"
@@ -1053,6 +1508,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var previewConfig = _config with
         {
             WorkerName = string.IsNullOrWhiteSpace(_workerNameDraft) ? _config.WorkerName : _workerNameDraft.Trim(),
+            PrimaryPool = string.IsNullOrWhiteSpace(_primaryPoolDraft) ? _config.PrimaryPool : _primaryPoolDraft.Trim(),
+            BackupPool = string.IsNullOrWhiteSpace(_backupPoolDraft) ? _config.BackupPool : _backupPoolDraft.Trim(),
             CoreClock = NormalizeGpuSetting(_coreClockDraft, count),
             MemoryClock = NormalizeGpuSetting(_memoryClockDraft, count),
             PowerLimit = NormalizeGpuSetting(_powerLimitDraft, count),
@@ -1063,26 +1520,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
     }
 
-    private async Task StopMinerAsync(bool manual = false)
+    private async Task StopMinerAsync(bool manual = false, bool forceKillOnTimeout = false)
     {
         if (!TryBeginMinerAction()) return;
         if (manual)
         {
             _userManuallyStopped = true;
-            _thermalPaused = false;
+            _watchdog.ResetMinerTimers(clearThermalPause: true);
         }
         MinerControlStatus = "Остановка: отправка штатного Ctrl+C…";
         try
         {
-            await _minerControl.StopAsync(_lifetime?.Token ?? CancellationToken.None);
+            await _minerControl.StopAsync(forceKillOnTimeout, _lifetime?.Token ?? CancellationToken.None);
             WindowsDiagnosticsService.SetMiningSleepPrevention(false);
             if (manual)
             {
                 _config = _config with { LastKnownMiningActive = false };
                 await RigConfig.SaveLocalSettingsAsync(_config, _lifetime?.Token ?? CancellationToken.None);
             }
-            _minerStartedOrObservedAt = null;
-            _zeroHashrateSince = null;
+            _watchdog.ResetMinerTimers();
             MinerControlStatus = "Майнер остановлен штатно";
             if (manual) AppendWatchdogEvent("Майнер остановлен пользователем.");
             _ = RefreshAsync(force: true);
@@ -1157,6 +1613,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task SaveMinerSettingsAsync()
     {
         if (!CanSaveMinerSettings() || !TryBeginMinerAction()) return;
+        var needMinerRestart = false;
         try
         {
             var token = _lifetime?.Token ?? CancellationToken.None;
@@ -1164,6 +1621,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _ = TryParseTariff(ElectricityRateDraft, out var parsedDayTariff);
             _ = TryParseTariff(NightElectricityRateDraft, out var parsedNightTariff);
             var normalizedPowerLimit = NormalizeGpuSetting(PowerLimitDraft, count);
+            var previousConfig = _config;
             _config = _config with
             {
                 WorkerName = WorkerNameDraft.Trim(),
@@ -1173,12 +1631,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 Kernel = NormalizeGpuSetting(KernelDraft, count),
                 Fan = NormalizeGpuSetting(FanDraft, count),
                 ActivePreset = ActivePreset,
+                AutoRestartMinerOnOverclockChange = AutoRestartMinerOnOverclockChange,
                 ElectricityRateRubPerKwh = parsedDayTariff,
                 NightElectricityRateRubPerKwh = parsedNightTariff
             };
             await RigConfig.SaveLocalSettingsAsync(_config, token);
             _minerControl.UpdateConfig(_config);
             MinerCommandLinePreview = _minerControl.GetCommandLinePreview(_walletAddressDraft, count);
+
+            needMinerRestart = _minerControl.IsRunning && MinerControlService.RequiresMinerRestartForSettings(previousConfig, _config);
+
             try
             {
                 var targetForDriver = string.IsNullOrWhiteSpace(normalizedPowerLimit) ? "auto" : normalizedPowerLimit;
@@ -1195,6 +1657,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 MinerControlStatus = $"Профиль сохранён, но лимит мощности не применён: {ex.Message}";
                 AppendWatchdogEvent($"Ошибка применения Power Limit: {ex.Message}");
             }
+
+            if (needMinerRestart)
+            {
+                var activeWallet = string.IsNullOrWhiteSpace(_walletAddress)
+                    ? WalletAddressDraft.Trim().ToLowerInvariant()
+                    : _walletAddress;
+                if (_config.AutoRestartMinerOnOverclockChange && PoolEarningsClient.IsValidWallet(activeWallet))
+                {
+                    AppendWatchdogEvent("Изменены частоты/kernel/fan: автоматический мягкий перезапуск OneZeroMiner.");
+                    await _minerControl.RestartAsync(activeWallet, count, token);
+                    _watchdog.MarkMinerStarted(DateTimeOffset.UtcNow);
+                    MinerControlStatus = "Профиль применён и OneZeroMiner перезапущен с новыми частотами.";
+                }
+                else
+                {
+                    MinerControlStatus += " (для применения новых частот/fan перезапустите майнер)";
+                }
+            }
+
             _ = RefreshAsync(force: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1223,6 +1704,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(IsMinerRunning));
         StartMinerCommand.NotifyCanExecuteChanged();
         StopMinerCommand.NotifyCanExecuteChanged();
+        RestartMinerNowCommand.NotifyCanExecuteChanged();
         ToggleMinerModeCommand.NotifyCanExecuteChanged();
         ToggleWatchdogCommand.NotifyCanExecuteChanged();
         ToggleSmartFanCurveCommand.NotifyCanExecuteChanged();
@@ -1236,6 +1718,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PresetSilentCommand.NotifyCanExecuteChanged();
         ApplyPowerLimitNowCommand.NotifyCanExecuteChanged();
         SaveMinerSettingsCommand.NotifyCanExecuteChanged();
+        SaveFanCurveCommand.NotifyCanExecuteChanged();
+        SaveWatchdogAndScheduleCommand.NotifyCanExecuteChanged();
     }
 
     private async Task RefreshAsync(bool force = false)
@@ -1250,10 +1734,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var token = _lifetime?.Token ?? CancellationToken.None;
+            if (HasToast && DateTimeOffset.UtcNow >= _toastExpiresAt)
+                DismissToast();
+
             var snapshot = await _telemetry.ReadAsync(token);
             Apply(snapshot);
             ApplySmartFanCurveIfEnabled(snapshot.Gpus);
-            MinerLogTail = _minerControl.ReadRecentLogLines(14);
+            MinerLogTail = _minerControl.ReadRecentLogLines(18);
+            AppLogTail = ReadRecentAppLogLines(16);
             await EvaluateDayNightScheduleAsync();
             await EvaluateWatchdogAndThermalProtectionAsync(snapshot);
             await PollTelegramRemoteCommandsAsync();
@@ -1263,20 +1751,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 _lastPoolPingAt = DateTimeOffset.UtcNow;
                 var ping = await _poolPingService.MeasureAsync(_config.PrimaryPool, _config.BackupPool, token);
                 PoolPingText = ping.SummaryText;
-                if (ping.PrimaryPingMs is null && ping.BackupPingMs is not null)
+                var poolSwitch = _watchdog.EvaluatePoolSwitch(ping, _minerControl.UseBackupPool, _config);
+                if (poolSwitch == true)
                 {
-                    if (!_minerControl.UseBackupPool)
-                    {
-                        _minerControl.UseBackupPool = true;
-                        UpdateCommandLinePreviewFromDrafts();
-                        AppendWatchdogEvent($"Сетевой монитор: основной пул RU не отвечает, выбран резервный пул EU ({ping.BackupPingMs} мс).");
-                    }
+                    _minerControl.UseBackupPool = true;
+                    OnPropertyChanged(nameof(ActivePoolBadgeText));
+                    UpdateCommandLinePreviewFromDrafts();
+                    var msg = $"Сетевой монитор: основной пул не отвечает ({_config.PoolDropSwitchThresholdCount} проверок), переключение на резервный пул EU ({ping.BackupPingMs} мс).";
+                    AppendWatchdogEvent(msg);
+                    ShowToast(msg, "Warning", 7);
+                    await SendTelegramAlertIfEnabledAsync($"🌐 {msg}");
+                    if (_minerControl.IsRunning && !_isMinerBusy && !_isAutoTuning && PoolEarningsClient.IsValidWallet(_walletAddress))
+                        await RestartMinerAsync();
                 }
-                else if (ping.PrimaryPingMs is not null && _minerControl.UseBackupPool)
+                else if (poolSwitch == false)
                 {
                     _minerControl.UseBackupPool = false;
+                    OnPropertyChanged(nameof(ActivePoolBadgeText));
                     UpdateCommandLinePreviewFromDrafts();
-                    AppendWatchdogEvent($"Сетевой монитор: основной пул RU снова доступен ({ping.PrimaryPingMs} мс).");
+                    var msg = $"Сетевой монитор: основной пул RU снова доступен ({ping.PrimaryPingMs} мс).";
+                    AppendWatchdogEvent(msg);
+                    ShowToast(msg, "Success");
+                    if (_minerControl.IsRunning && !_isMinerBusy && !_isAutoTuning && PoolEarningsClient.IsValidWallet(_walletAddress))
+                        await RestartMinerAsync();
                 }
             }
 
@@ -1302,6 +1799,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             if (_minerControl.IsRunning && DateTimeOffset.UtcNow - _lastCsvSnapshotAt >= TimeSpan.FromMinutes(10))
                 await RecordCsvSnapshotAsync("Периодический срез телеметрии");
+
+            if (DateTimeOffset.UtcNow - _lastSessionSaveAt >= TimeSpan.FromMinutes(1))
+                await SaveSessionStateAsync();
         }
         catch (OperationCanceledException) when (_disposed) { }
         catch (Exception ex)
@@ -1309,6 +1809,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ConnectionStatus = "Ошибка обновления";
             DetailStatus = $"Не удалось обновить телеметрию: {ex.Message}";
             LastUpdated = "Последний опрос завершился ошибкой";
+            AppLogger.Error("Ошибка цикла RefreshAsync", ex);
         }
         finally
         {
@@ -1324,117 +1825,55 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void ApplySmartFanCurveIfEnabled(IReadOnlyList<GpuLiveMetrics> gpus)
     {
         if (!SmartFanCurveEnabled || gpus.Count == 0) return;
-
-        var targets = new List<(int GpuId, int TargetFanPercent)>();
-        foreach (var gpu in gpus)
-        {
-            var core = gpu.TempC ?? 0;
-            var vramAdjusted = (gpu.VramTempC ?? 0) - 14;
-            var effectiveTemp = Math.Max(core, vramAdjusted);
-            if (effectiveTemp <= 0) continue;
-
-            var desiredFan = effectiveTemp switch
-            {
-                < 50 => 45,
-                < 60 => 55,
-                < 68 => 68,
-                < 75 => 82,
-                _ => 98
-            };
-
-            if (_lastSmartFanApplied.TryGetValue(gpu.Id, out var prevFan) && Math.Abs(desiredFan - prevFan) < 5)
-                continue;
-
-            _lastSmartFanApplied[gpu.Id] = desiredFan;
-            targets.Add((gpu.Id, desiredFan));
-        }
-
+        var targets = _smartFanController.EvaluateTargets(gpus, _config);
         if (targets.Count > 0)
             _ = _nvidiaSmi.TryApplySmartFansDirect(targets);
     }
 
     private async Task EvaluateWatchdogAndThermalProtectionAsync(TelemetrySnapshot snapshot)
     {
-        if (!WatchdogEnabled || _isMinerBusy || _isAutoTuning || _userManuallyStopped)
-            return;
+        var decision = _watchdog.Evaluate(
+            snapshot,
+            _minerControl.IsRunning,
+            WatchdogEnabled,
+            _isMinerBusy,
+            _isAutoTuning,
+            _userManuallyStopped,
+            _config,
+            DateTimeOffset.UtcNow);
 
-        var isRunning = _minerControl.IsRunning;
-        var maxCoreTemp = snapshot.Gpus.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty(0).Max();
-        var maxVramTemp = snapshot.Gpus.Where(g => g.VramTempC is not null).Select(g => g.VramTempC!.Value).DefaultIfEmpty(0).Max();
+        if (!string.IsNullOrEmpty(decision.StatusText))
+            WatchdogStatusText = decision.StatusText;
+        if (!string.IsNullOrEmpty(decision.EventLogMessage))
+            AppendWatchdogEvent(decision.EventLogMessage);
 
-        if (isRunning && (maxCoreTemp >= _config.CriticalStopTempC || maxVramTemp >= 104))
+        switch (decision.Action)
         {
-            _thermalPaused = true;
-            var reason = maxVramTemp >= 104
-                ? $"АВАРИЙНЫЙ СТОП: память GDDR6X достигла {maxVramTemp:0} °C"
-                : $"АВАРИЙНЫЙ СТОП: температура GPU достигла {maxCoreTemp:0} °C (порог {_config.CriticalStopTempC} °C)";
-            WatchdogStatusText = $"{reason}. Ожидание остывания до ≤ {_config.ResumeTempC} °C.";
-            AppendWatchdogEvent(reason);
-            await RecordCsvSnapshotAsync(reason);
-            await SendTelegramAlertIfEnabledAsync($"🚨 {reason}\nМайнер экстренно остановлен до остывания видеокарт ≤ {_config.ResumeTempC} °C.");
-            await StopMinerAsync(manual: false);
-            return;
-        }
+            case WatchdogActionType.ThermalEmergencyStop:
+                await RecordCsvSnapshotAsync(decision.EventLogMessage ?? "Аварийный термостоп");
+                if (!string.IsNullOrEmpty(decision.TelegramAlertMessage))
+                    await SendTelegramAlertIfEnabledAsync(decision.TelegramAlertMessage);
+                await StopMinerAsync(manual: false, forceKillOnTimeout: true);
+                break;
 
-        if (_thermalPaused && !isRunning && snapshot.Gpus.Count > 0 && maxCoreTemp > 0 && maxCoreTemp <= _config.ResumeTempC && maxVramTemp <= 88)
-        {
-            _thermalPaused = false;
-            var resumeMsg = $"Карты остыли до {maxCoreTemp:0} °C (≤ {_config.ResumeTempC} °C). Автоматическое возобновление майнинга.";
-            WatchdogStatusText = resumeMsg;
-            AppendWatchdogEvent(resumeMsg);
-            await RecordCsvSnapshotAsync(resumeMsg);
-            await SendTelegramAlertIfEnabledAsync($"✅ {resumeMsg}");
-            await StartMinerAsync(manual: false);
-            return;
-        }
+            case WatchdogActionType.ThermalResume:
+                await RecordCsvSnapshotAsync(decision.EventLogMessage ?? "Возобновление после остывания");
+                if (!string.IsNullOrEmpty(decision.TelegramAlertMessage))
+                    await SendTelegramAlertIfEnabledAsync(decision.TelegramAlertMessage);
+                await StartMinerAsync(manual: false);
+                break;
 
-        if (isRunning && maxCoreTemp >= _config.WarningTempC && DateTimeOffset.UtcNow - _lastThermalWarningAt >= TimeSpan.FromSeconds(45))
-        {
-            _lastThermalWarningAt = DateTimeOffset.UtcNow;
-            var warnMsg = $"ВНИМАНИЕ: температура GPU {maxCoreTemp:0} °C приблизилась к критическому порогу ({_config.CriticalStopTempC} °C).";
-            WatchdogStatusText = warnMsg;
-            AppendWatchdogEvent(warnMsg);
-        }
-
-        if (isRunning)
-        {
-            _minerStartedOrObservedAt ??= DateTimeOffset.UtcNow;
-            var warmupPassed = DateTimeOffset.UtcNow - _minerStartedOrObservedAt.Value >= TimeSpan.FromSeconds(45);
-            var hasPositiveHashrate = snapshot.MinerApiAvailable && snapshot.TotalHashrateTHs is double rate && rate > 0.01;
-
-            if (hasPositiveHashrate)
-            {
-                _zeroHashrateSince = null;
-                if (!_thermalPaused && maxCoreTemp < _config.WarningTempC)
-                    WatchdogStatusText = $"Watchdog: норма · пиковая темп. {maxCoreTemp:0} °C · рестартов: {_watchdogRestartCount}";
-            }
-            else if (warmupPassed)
-            {
-                _zeroHashrateSince ??= DateTimeOffset.UtcNow;
-                var zeroElapsed = DateTimeOffset.UtcNow - _zeroHashrateSince.Value;
-                if (zeroElapsed >= TimeSpan.FromSeconds(_config.ZeroHashrateRestartSeconds))
-                {
-                    _zeroHashrateSince = null;
-                    _watchdogRestartCount++;
-                    var tdrEvent = await WindowsDiagnosticsService.CheckRecentNvidiaDriverResetAsync(_lifetime?.Token ?? CancellationToken.None);
-                    if (!string.IsNullOrWhiteSpace(tdrEvent))
-                        AppendWatchdogEvent($"Диагностика Windows (nvlddmkm/4101): {tdrEvent}");
-
-                    var restartMsg = $"Watchdog: 0 TH/s в течение {(int)zeroElapsed.TotalSeconds} с. Перезапуск OneZeroMiner (#{_watchdogRestartCount}).";
-                    WatchdogStatusText = restartMsg;
-                    AppendWatchdogEvent(restartMsg);
-                    await RecordCsvSnapshotAsync(restartMsg);
-                    await SendTelegramAlertIfEnabledAsync($"⚠️ {restartMsg}{(string.IsNullOrWhiteSpace(tdrEvent) ? string.Empty : $"\nСобытие драйвера: {tdrEvent}")}");
-                    await StopMinerAsync(manual: false);
-                    await Task.Delay(1500, _lifetime?.Token ?? CancellationToken.None);
-                    await StartMinerAsync(manual: false);
-                }
-                else
-                {
-                    var remaining = Math.Max(0, _config.ZeroHashrateRestartSeconds - (int)zeroElapsed.TotalSeconds);
-                    WatchdogStatusText = $"Watchdog: 0 TH/s · до авто-перезапуска {remaining} с";
-                }
-            }
+            case WatchdogActionType.ZeroHashrateRestart:
+                var tdrEvent = await WindowsDiagnosticsService.CheckRecentNvidiaDriverResetAsync(_lifetime?.Token ?? CancellationToken.None);
+                if (!string.IsNullOrWhiteSpace(tdrEvent))
+                    AppendWatchdogEvent($"Диагностика Windows (nvlddmkm/4101): {tdrEvent}");
+                await RecordCsvSnapshotAsync(decision.EventLogMessage ?? "Watchdog рестарт 0 TH/s");
+                if (!string.IsNullOrEmpty(decision.TelegramAlertMessage))
+                    await SendTelegramAlertIfEnabledAsync($"{decision.TelegramAlertMessage}{(string.IsNullOrWhiteSpace(tdrEvent) ? string.Empty : $"\nСобытие драйвера: {tdrEvent}")}");
+                await StopMinerAsync(manual: false, forceKillOnTimeout: true);
+                await Task.Delay(1500, _lifetime?.Token ?? CancellationToken.None);
+                await StartMinerAsync(manual: false);
+                break;
         }
     }
 
@@ -1444,6 +1883,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         MinerApiStatus = snapshot.MinerApiMessage;
         HardwareStatus = snapshot.NvidiaMessage;
         PoolStatus = snapshot.PoolConnected switch { true => "Подключён", false => "Нет подключения", null => "Нет данных" };
+        PoolConnectedState = snapshot.PoolConnected switch { true => "Connected", false => "Disconnected", null => "Unknown" };
         PoolUrl = snapshot.PoolUrl ?? "Адрес пула недоступен";
         TotalHashrate = snapshot.TotalHashrateTHs is double rate ? $"{rate:0.00} TH/s" : "Нет данных";
         _lastTotalHashrateTHs = snapshot.TotalHashrateTHs;
@@ -1474,7 +1914,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             TotalEfficiency = "Энергоэффективность: — GH/W · Потребление: — Вт";
         }
 
-        UpdateElectricityAndNetProfit(snapshot.SampledAt, hasPower ? totalPowerW : null);
+        UpdateElectricityAndNetProfit(snapshot.SampledAt, snapshot.Gpus, hasPower ? totalPowerW : null);
 
         AcceptedShares = snapshot.AcceptedShares?.ToString("N0") ?? "Нет данных";
         if (snapshot.RejectedShares is long rej && snapshot.AcceptedShares is long acc && acc + rej > 0)
@@ -1496,6 +1936,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ConnectionStatus = snapshot.MinerApiAvailable && snapshot.NvidiaAvailable
             ? "Все источники подключены"
             : hardwareOrMinerAvailable ? "Часть источников недоступна" : "Нет связи с источниками";
+        ConnectionHealthLevel = _watchdog.ThermalPaused
+            ? "Warning"
+            : snapshot.MinerApiAvailable && snapshot.NvidiaAvailable ? "Connected" : hardwareOrMinerAvailable ? "Partial" : "Disconnected";
 
         DetailStatus = string.Join("  ·  ", new[]
         {
@@ -1507,7 +1950,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var running = _minerControl.IsRunning;
         WindowsDiagnosticsService.SetMiningSleepPrevention(running && _config.PreventSleepWhenMining);
         if (!_isMinerBusy && !_isAutoTuning)
-            MinerControlStatus = _thermalPaused
+            MinerControlStatus = _watchdog.ThermalPaused
                 ? $"Термо-пауза: ожидание остывания ≤ {_config.ResumeTempC} °C"
                 : running ? "Майнер запущен (защита от сна активна)" : "Майнер остановлен";
         UpdateMinerState();
@@ -1543,6 +1986,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             if (index < Gpus.Count) Gpus[index] = ordered[index];
             else Gpus.Add(ordered[index]);
         }
+
+        var nvidiaOrdered = ordered.Where(IsNvidiaGpu).ToArray();
+        Gpu0EffectiveTemp = nvidiaOrdered.Length > 0 ? SmartFanController.ComputeEffectiveTemperature(nvidiaOrdered[0], _config.VramTempOffsetC) : null;
+        Gpu1EffectiveTemp = nvidiaOrdered.Length > 1 ? SmartFanController.ComputeEffectiveTemperature(nvidiaOrdered[1], _config.VramTempOffsetC) : null;
+        if (Gpu0EffectiveTemp <= 0) Gpu0EffectiveTemp = null;
+        if (Gpu1EffectiveTemp <= 0) Gpu1EffectiveTemp = null;
+        SyncOverclockRowsFromDrafts();
+        UpdateDiagnosticFlagsCore(tdrEvent: null);
 
         var powerCards = ordered.Where(gpu => gpu.MinPowerLimitWatts is not null && gpu.MaxPowerLimitWatts is not null).ToArray();
         if (powerCards.Length > 0)
@@ -1588,53 +2039,41 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var maxTemp = ordered.Where(g => g.TempC is not null).Select(g => g.TempC!.Value).DefaultIfEmpty(0).Max();
         var trayState = !running
-            ? (_thermalPaused ? TrayHealthState.Critical : TrayHealthState.Stopped)
+            ? (_watchdog.ThermalPaused ? TrayHealthState.Critical : TrayHealthState.Stopped)
             : (snapshot.TotalHashrateTHs is null or <= 0.01 ? TrayHealthState.Critical : maxTemp >= _config.WarningTempC ? TrayHealthState.Warning : TrayHealthState.MiningHealthy);
 
         TrayStatusChanged?.Invoke($"Pearl Rig · {TotalHashrate} · Макс {maxTemp:0}°C · {(running ? "Майнит" : "Остановлен")}", trayState);
     }
 
-    private void UpdateElectricityAndNetProfit(DateTimeOffset sampledAt, double? totalPowerWatts)
+    private void UpdateElectricityAndNetProfit(DateTimeOffset sampledAt, IReadOnlyList<GpuLiveMetrics> gpus, double? totalPowerWatts)
     {
         var dayTariff = TryParseTariff(ElectricityRateDraft, out var parsedDay) ? parsedDay : _config.ElectricityRateRubPerKwh;
         var nightTariff = TryParseTariff(NightElectricityRateDraft, out var parsedNight) ? parsedNight : _config.NightElectricityRateRubPerKwh;
-        var isNightNow = DualTariffEnabled && _config.IsNightTariffWindow(sampledAt.LocalDateTime);
-        var activeTariff = isNightNow ? nightTariff : dayTariff;
-        var zoneLabel = DualTariffEnabled ? (isNightNow ? $"Т2 Ночь {activeTariff:0.00} ₽" : $"Т1 День {activeTariff:0.00} ₽") : $"{activeTariff:0.00} ₽/кВт·ч";
+        var snap = _profitability.UpdateEnergyAndCost(sampledAt, gpus, totalPowerWatts, _config, dayTariff, nightTariff);
+        var counterTag = snap.UsedHardwareCounter ? "NVML" : "расчёт";
 
-        if (_lastEnergySampleAt is DateTimeOffset prev && totalPowerWatts is double watts && watts > 0)
+        if (snap.DailyElectricityCostRub is double dailyCostRub)
         {
-            var dtHours = (sampledAt - prev).TotalHours;
-            if (dtHours is > 0 and < 0.1)
+            ElectricitySummaryText = $"Сессия ({counterTag}): {snap.SessionEnergyKwh:0.000} кВт·ч ({snap.SessionElectricityCostRub:0.00} ₽) · Сейчас: {snap.ZoneLabel} · Розетка: {dailyCostRub:0.00} ₽/сут";
+            DailyElectricityKpiText = $"{dailyCostRub:0.00} ₽/сут · {snap.ZoneLabel}";
+            if (_profitability.LastObservedGrossRubPerDay is double grossRubPerDay && _profitability.LastObservedNetRubPerDay is double netRubPerDay)
             {
-                var deltaKwh = (watts / 1000d) * dtHours;
-                _sessionEnergyKwh += deltaKwh;
-                _sessionElectricityCostRub += deltaKwh * activeTariff;
-            }
-        }
-        _lastEnergySampleAt = sampledAt;
-
-        if (totalPowerWatts is double currentWatts && currentWatts > 0)
-        {
-            var dailyKwh = currentWatts * 24d / 1000d;
-            var blendedTariff = DualTariffEnabled ? (dayTariff * 16d + nightTariff * 8d) / 24d : activeTariff;
-            var dailyCostRub = dailyKwh * blendedTariff;
-            ElectricitySummaryText = $"Сессия: {_sessionEnergyKwh:0.000} кВт·ч ({_sessionElectricityCostRub:0.00} ₽) · Сейчас: {zoneLabel} · Розетка: {dailyCostRub:0.00} ₽/сут";
-            if (_lastObservedGrossRubPerDay is double grossRubPerDay)
-            {
-                var netRubPerDay = grossRubPerDay - dailyCostRub;
-                _lastObservedNetRubPerDay = netRubPerDay;
                 NetProfitSummaryText = $"Чистая прибыль: {netRubPerDay:0.00} ₽/сут (начисления {grossRubPerDay:0.00} ₽ − свет {dailyCostRub:0.00} ₽)";
+                DailyNetProfitKpiText = $"{(netRubPerDay >= 0 ? "+" : string.Empty)}{netRubPerDay:0.00} ₽/сут";
             }
             else
             {
                 NetProfitSummaryText = $"Расход на свет: {dailyCostRub:0.00} ₽/сут (чистая прибыль появится после расчёта темпа начислений PRL)";
+                DailyNetProfitKpiText = "Ожидание темпа PRL";
             }
         }
         else
         {
-            ElectricitySummaryText = $"Сессия: {_sessionEnergyKwh:0.000} кВт·ч ({_sessionElectricityCostRub:0.00} ₽) · Активный тариф: {zoneLabel}";
+            ElectricitySummaryText = $"Сессия: {snap.SessionEnergyKwh:0.000} кВт·ч ({snap.SessionElectricityCostRub:0.00} ₽) · Активный тариф: {snap.ZoneLabel}";
+            DailyElectricityKpiText = $"— ₽/сут · {snap.ZoneLabel}";
+            DailyNetProfitKpiText = "Нет данных Вт";
         }
+        RefreshSchedulePreview();
     }
 
     private async Task ApplyEarningsAsync(PoolEarningsSnapshot earnings)
@@ -1657,6 +2096,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 var deltaPaid = currentPaid - previousPaid;
                 var payoutMsg = $"Получена выплата с пула Kryptex: +{deltaPaid:0.########} PRL (всего выплачено: {currentPaid:0.########} PRL)";
                 AppendWatchdogEvent(payoutMsg);
+                ShowToast(payoutMsg, "Success", 8);
                 await RecordCsvSnapshotAsync(payoutMsg);
                 await SendTelegramAlertIfEnabledAsync($"💰 {payoutMsg}");
             }
@@ -1675,33 +2115,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             PayoutProgressText = "Прогресс выплаты: ожидание порога от Kryptex API";
         }
 
-        if (earnings.TotalPrl is double observedTotal)
+        var accumulation = _profitability.UpdateAccumulation(earnings);
+        SessionAccumulationRate = accumulation.SummaryText;
+
+        var etaDays = _profitability.EstimateDaysToPayout(earnings.TotalPrl, earnings.PayoutThresholdPrl);
+        PayoutEtaText = etaDays switch
         {
-            if (_sessionFirstBalancePrl is null || _sessionFirstBalanceAt is null || observedTotal < _sessionFirstBalancePrl.Value)
-            {
-                _sessionFirstBalancePrl = observedTotal;
-                _sessionFirstBalanceAt = earnings.FetchedAt;
-                SessionAccumulationRate = "Фактическая скорость сессии: точка отсчёта зафиксирована";
-            }
-            else
-            {
-                var elapsedHours = (earnings.FetchedAt - _sessionFirstBalanceAt.Value).TotalHours;
-                var deltaPrl = observedTotal - _sessionFirstBalancePrl.Value;
-                if (elapsedHours >= 0.05 && deltaPrl > 0)
-                {
-                    var perDayPrl = deltaPrl / elapsedHours * 24d;
-                    if (earnings.PrlRub is double rubRate)
-                    {
-                        _lastObservedGrossRubPerDay = perDayPrl * rubRate;
-                        SessionAccumulationRate = $"За сессию: +{deltaPrl:0.######} PRL · темп {perDayPrl:0.####} PRL/сут (≈ {_lastObservedGrossRubPerDay:0.00} ₽/сут)";
-                    }
-                    else
-                    {
-                        SessionAccumulationRate = $"За сессию: +{deltaPrl:0.######} PRL · темп {perDayPrl:0.####} PRL/сут";
-                    }
-                }
-            }
-        }
+            0d => "Порог достигнут!",
+            double d when d < 1d => $"~{d * 24d:0.1} ч",
+            double d => $"~{d:0.1} дн.",
+            _ => "Ожидание темпа"
+        };
 
         PoolRubEstimate = earnings.TotalPrl is double total && earnings.PrlRub is double price ? $"≈ {total * price:0.00} ₽" : "Нет данных";
         MarketRate = earnings.PrlUsd is double usd && earnings.UsdRub is double exchangeRate
@@ -1724,8 +2148,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             await RigConfig.SaveWalletAsync(wallet, _lifetime?.Token ?? CancellationToken.None);
             _walletAddress = wallet;
             _lastEarningsRead = DateTimeOffset.MinValue;
-            _sessionFirstBalancePrl = null;
-            _sessionFirstBalanceAt = null;
+            _profitability.ResetAccumulationBaseline();
             UpdateCommandLinePreviewFromDrafts();
             WalletStatus = "Публичный адрес сохранён только в локальном профиле Windows";
             await RefreshAsync(force: true);
@@ -1733,6 +2156,36 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             WalletStatus = $"Не удалось сохранить адрес: {ex.Message}";
+        }
+    }
+
+    private async Task SaveSessionStateAsync()
+    {
+        _lastSessionSaveAt = DateTimeOffset.UtcNow;
+        var state = new PersistedSessionState(
+            _profitability.SessionEnergyKwh,
+            _profitability.SessionElectricityCostRub,
+            _totalHashrateBuffer.ToArray(),
+            _watchdogEvents.ToArray(),
+            DateTimeOffset.UtcNow);
+        await SessionStateService.SaveAsync(state);
+    }
+
+    private static string ReadRecentAppLogLines(int maxLines)
+    {
+        try
+        {
+            var path = AppLogger.GetLogFilePath();
+            if (!File.Exists(path)) return "Журнал приложения пока пуст.";
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length > 12000) stream.Seek(-12000, SeekOrigin.End);
+            using var reader = new StreamReader(stream);
+            var lines = reader.ReadToEnd().Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+            return string.Join(Environment.NewLine, lines.TakeLast(maxLines));
+        }
+        catch
+        {
+            return "Не удалось прочитать журнал приложения.";
         }
     }
 
@@ -1780,6 +2233,290 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             : string.Join(',', parts);
     }
 
+    private void ShowToast(string message, string severity = "Info", int seconds = 5)
+    {
+        ToastSeverity = severity;
+        ToastMessage = message;
+        _toastExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(seconds, 2, 20));
+    }
+
+    private void DismissToast()
+    {
+        ToastMessage = string.Empty;
+        _toastExpiresAt = DateTimeOffset.MinValue;
+    }
+
+    private async Task SwitchPoolManuallyAsync()
+    {
+        if (!TryBeginMinerAction()) return;
+        try
+        {
+            _minerControl.UseBackupPool = !_minerControl.UseBackupPool;
+            OnPropertyChanged(nameof(ActivePoolBadgeText));
+            UpdateCommandLinePreviewFromDrafts();
+            var label = _minerControl.UseBackupPool ? "резервный (EU)" : "основной (RU)";
+            var msg = $"Пул переключён вручную на {label}.";
+            AppendWatchdogEvent(msg);
+            ShowToast(msg, "Info");
+
+            var wallet = string.IsNullOrWhiteSpace(_walletAddress) ? WalletAddressDraft.Trim().ToLowerInvariant() : _walletAddress;
+            if (_minerControl.IsRunning && PoolEarningsClient.IsValidWallet(wallet))
+            {
+                await _minerControl.RestartAsync(wallet, GetTargetNvidiaGpuCount(), _lifetime?.Token ?? CancellationToken.None);
+                _watchdog.MarkMinerStarted(DateTimeOffset.UtcNow);
+            }
+            _ = RefreshAsync(force: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ShowToast($"Не удалось переключить пул: {ex.Message}", "Error");
+        }
+        finally
+        {
+            EndMinerAction();
+        }
+    }
+
+    private async Task PingPoolsNowAsync()
+    {
+        var ping = await _poolPingService.MeasureAsync(PrimaryPoolDraft, BackupPoolDraft, _lifetime?.Token ?? CancellationToken.None);
+        PoolPingText = ping.SummaryText;
+        ShowToast(ping.SummaryText, "Info");
+    }
+
+    private void ClearWatchdogLog()
+    {
+        _watchdogEvents.Clear();
+        WatchdogEventsText = "Лента событий Watchdog очищена пользователем.";
+        _ = SaveSessionStateAsync();
+        ShowToast("Журнал событий Watchdog очищен", "Info");
+    }
+
+    private void CopyFilteredLogsToClipboard()
+    {
+        try
+        {
+            var bundle = $"=== ONEZEROMINER.LOG ===\r\n{FilteredMinerLogTail}\r\n\r\n=== WATCHDOG ===\r\n{FilteredWatchdogEventsText}\r\n\r\n=== APP.LOG ===\r\n{FilteredAppLogTail}";
+            Clipboard.SetText(bundle);
+            ShowToast("Отфильтрованные журналы скопированы в буфер обмена", "Success");
+        }
+        catch (Exception ex)
+        {
+            ShowToast($"Ошибка копирования логов: {ex.Message}", "Error");
+        }
+    }
+
+    private async Task RunDiagnosticsCheckAsync()
+    {
+        var tdr = await WindowsDiagnosticsService.CheckRecentNvidiaDriverResetAsync(_lifetime?.Token ?? CancellationToken.None);
+        UpdateDiagnosticFlagsCore(tdr);
+        ShowToast("Самодиагностика системы обновлена", "Success");
+    }
+
+    private void UpdateDiagnosticFlagsCore(string? tdrEvent)
+    {
+        DiagAdminOk = MinerControlService.IsCurrentProcessElevated();
+        DiagAdminText = DiagAdminOk ? "Права Администратора: ОК" : "Запуск без прав Admin";
+
+        DiagNvmlOk = Gpus.Any(g => g.Source is "nvml" or "nvidia-smi");
+        DiagNvmlText = DiagNvmlOk ? "Драйвер NVML: подключён" : "NVML: ожидание/не найден";
+
+        var minerPath = MinerControlService.ResolveMinerPath();
+        DiagMinerExeOk = !string.IsNullOrWhiteSpace(minerPath);
+        DiagMinerExeText = DiagMinerExeOk ? "onezerominer.exe: найден" : "onezerominer.exe: НЕ НАЙДЕН";
+
+        DiagAutoStartOk = AutoStartMining;
+        DiagAutoStartText = DiagAutoStartOk ? "Автозапуск: зарегистрирован" : "Автозапуск: ручной";
+
+        DiagTdrOk = string.IsNullOrWhiteSpace(tdrEvent);
+        DiagTdrText = DiagTdrOk ? "TDR (4101): сбросов нет" : $"TDR 4101: {tdrEvent}";
+    }
+
+    private string FilterLogText(string source)
+    {
+        if (string.IsNullOrWhiteSpace(source)) return string.Empty;
+        var hasQuery = !string.IsNullOrWhiteSpace(LogSearchQuery);
+        if (!hasQuery && !LogOnlyWarningsAndErrors) return source;
+
+        var lines = source.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+        IEnumerable<string> filtered = lines;
+
+        if (LogOnlyWarningsAndErrors)
+        {
+            filtered = filtered.Where(line =>
+                line.Contains("ERROR", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("WARN", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("АВАРИЙН", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("ВНИМАНИЕ", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("Ошибка", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("fail", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("dropped", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("timeout", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (hasQuery)
+        {
+            var q = LogSearchQuery.Trim();
+            filtered = filtered.Where(line => line.Contains(q, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var result = filtered.ToArray();
+        return result.Length == 0 ? "Нет строк, соответствующих фильтру." : string.Join(Environment.NewLine, result);
+    }
+
+    private void NotifyFanCurveChanged()
+    {
+        OnPropertyChanged(nameof(FanCurveTempLowValue));
+        OnPropertyChanged(nameof(FanCurveSpeedLowValue));
+        OnPropertyChanged(nameof(FanCurveTempMidValue));
+        OnPropertyChanged(nameof(FanCurveSpeedMidValue));
+        OnPropertyChanged(nameof(FanCurveTempHighValue));
+        OnPropertyChanged(nameof(FanCurveSpeedHighValue));
+        OnPropertyChanged(nameof(FanCurveValidationError));
+    }
+
+    private string ValidateFanCurveDrafts()
+    {
+        if (!int.TryParse(FanCurveTempLowCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var t1)
+            || !int.TryParse(FanCurveTempMidCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var t2)
+            || !int.TryParse(FanCurveTempHighCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var t3)
+            || !int.TryParse(FanCurveSpeedLowPctDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var s1)
+            || !int.TryParse(FanCurveSpeedMidPctDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var s2)
+            || !int.TryParse(FanCurveSpeedHighPctDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var s3))
+            return "Укажите целые числа для всех температур и процентов оборотов.";
+
+        if (t1 < 30 || t1 >= t2 || t2 >= t3 || t3 > 95)
+            return "Температуры должны возрастать: 30 ≤ T1 < T2 < T3 ≤ 95 °C.";
+        if (s1 < 30 || s1 > s2 || s2 > s3 || s3 > 100)
+            return "Обороты кулеров должны возрастать: 30 ≤ S1 ≤ S2 ≤ S3 ≤ 100%.";
+        if (!int.TryParse(FanHysteresisCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hyst) || hyst is < 1 or > 10)
+            return "Гистерезис должен быть от 1 до 10 °C.";
+        if (!int.TryParse(VramTempOffsetCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var off) || off is < 0 or > 30)
+            return "Сдвиг GDDR6X должен быть от 0 до 30 °C.";
+        return string.Empty;
+    }
+
+    private string ValidateWatchdogDrafts()
+    {
+        if (!int.TryParse(ResumeTempCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var resT)
+            || !int.TryParse(WarningTempCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var warnT)
+            || !int.TryParse(CriticalStopTempCDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var critT))
+            return "Температурные пороги должны быть целыми числами.";
+        if (resT < 45 || resT >= warnT || warnT >= critT || critT > 100)
+            return "Проверьте порядок температур: 45 ≤ Возврат < Предупреждение < Стоп ≤ 100 °C.";
+        if (!int.TryParse(ZeroHashrateRestartSecondsDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var zeroS) || zeroS is < 30 or > 600)
+            return "Время до рестарта при 0 TH/s: 30–600 секунд.";
+        if (!int.TryParse(PoolDropSwitchThresholdCountDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var drops) || drops is < 1 or > 10)
+            return "Количество сбоев пула до переключения: 1–10.";
+        if (!int.TryParse(DayTariffStartHourDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var dH) || dH is < 0 or > 23
+            || !int.TryParse(NightTariffStartHourDraft, NumberStyles.Integer, CultureInfo.InvariantCulture, out var nH) || nH is < 0 or > 23)
+            return "Часы начала тарифа Т1 и Т2 должны быть от 0 до 23.";
+        return string.Empty;
+    }
+
+    private void RefreshSchedulePreview()
+    {
+        var dayRate = TryParseTariff(ElectricityRateDraft, out var dr) ? dr : _config.ElectricityRateRubPerKwh;
+        var nightRate = TryParseTariff(NightElectricityRateDraft, out var nr) ? nr : _config.NightElectricityRateRubPerKwh;
+        var previewConfig = _config with
+        {
+            DualTariffEnabled = DualTariffEnabled,
+            DayTariffStartHour = DayTariffStartHourValue,
+            NightTariffStartHour = NightTariffStartHourValue,
+            DaySchedulePreset = DaySchedulePreset,
+            NightSchedulePreset = NightSchedulePreset
+        };
+        var isNight = previewConfig.DualTariffEnabled && previewConfig.IsNightTariffWindow(DateTime.Now);
+        var blended = previewConfig.GetBlendedDailyTariff(dayRate, nightRate);
+        CurrentScheduleStatusText = previewConfig.DualTariffEnabled
+            ? $"Сейчас: {(isNight ? $"Т2 НОЧЬ ({NightSchedulePreset})" : $"Т1 ДЕНЬ ({DaySchedulePreset})")} · Ночных часов: {previewConfig.GetNightHoursPerDay()} ч/сут · Средний тариф: {blended:0.00} ₽/кВт·ч"
+            : $"Единый тариф: {dayRate:0.00} ₽/кВт·ч круглосуточно (включите двухтарифный учёт для зоны Т2)";
+    }
+
+    private void SyncOverclockRowsFromDrafts()
+    {
+        if (_syncingPerGpuRows) return;
+        _syncingPerGpuRows = true;
+        try
+        {
+            var nvidiaGpus = Gpus.Where(IsNvidiaGpu).OrderBy(g => g.Id).ToArray();
+            if (nvidiaGpus.Length == 0) return;
+
+            static string Pick(string draft, int index)
+            {
+                if (IsAutoSetting(draft)) return "Авто";
+                var parts = draft.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length == 0) return "Авто";
+                return index < parts.Length ? parts[index] : parts[0];
+            }
+
+            while (GpuOverclockRows.Count > nvidiaGpus.Length)
+                GpuOverclockRows.RemoveAt(GpuOverclockRows.Count - 1);
+
+            for (var i = 0; i < nvidiaGpus.Length; i++)
+            {
+                var gpu = nvidiaGpus[i];
+                var cclk = Pick(CoreClockDraft, i);
+                var mclk = Pick(MemoryClockDraft, i);
+                var pl = Pick(PowerLimitDraft, i);
+                var kern = Pick(KernelDraft, i);
+                var fan = Pick(FanDraft, i);
+
+                if (i >= GpuOverclockRows.Count)
+                {
+                    var row = new GpuOverclockRowEditor
+                    {
+                        Id = gpu.Id,
+                        Name = gpu.Name,
+                        ChangedCallback = PushOverclockRowsToDrafts
+                    };
+                    row.UpdateSilently(cclk, mclk, pl, kern, fan, gpu.PowerRangeBadgeText);
+                    GpuOverclockRows.Add(row);
+                }
+                else
+                {
+                    GpuOverclockRows[i].UpdateSilently(cclk, mclk, pl, kern, fan, gpu.PowerRangeBadgeText);
+                }
+            }
+        }
+        finally
+        {
+            _syncingPerGpuRows = false;
+        }
+    }
+
+    private void PushOverclockRowsToDrafts()
+    {
+        if (_syncingPerGpuRows || GpuOverclockRows.Count == 0) return;
+        _syncingPerGpuRows = true;
+        try
+        {
+            static string JoinField(IEnumerable<string> values)
+            {
+                var arr = values.Select(v => string.IsNullOrWhiteSpace(v) ? "Авто" : v.Trim()).ToArray();
+                return arr.All(IsAutoSetting) ? "Авто" : string.Join(',', arr.Select(v => IsAutoSetting(v) ? "*" : v));
+            }
+
+            CoreClockDraft = JoinField(GpuOverclockRows.Select(r => r.CoreClock));
+            MemoryClockDraft = JoinField(GpuOverclockRows.Select(r => r.MemoryClock));
+            PowerLimitDraft = JoinField(GpuOverclockRows.Select(r => r.PowerLimit));
+            KernelDraft = JoinField(GpuOverclockRows.Select(r => r.Kernel));
+            FanDraft = JoinField(GpuOverclockRows.Select(r => r.Fan));
+        }
+        finally
+        {
+            _syncingPerGpuRows = false;
+        }
+    }
+
+    private static double TryParseDoubleOrFallback(string text, double fallback)
+    {
+        var normalized = (text ?? string.Empty).Trim().Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && double.IsFinite(parsed)
+            ? parsed
+            : fallback;
+    }
+
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
@@ -1799,6 +2536,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        if (SmartFanCurveEnabled && Gpus.Count > 0)
+            _ = _nvidiaSmi.TryResetFansToAutoDirect(Gpus.Where(IsNvidiaGpu).Select(g => g.Id));
+        _ = SaveSessionStateAsync();
         WindowsDiagnosticsService.SetMiningSleepPrevention(false);
         _timer.Stop();
         _lifetime?.Cancel();

@@ -99,8 +99,25 @@ public sealed record GpuLiveMetrics
 
     public bool HasHashrate => HashrateTHs is double value && double.IsFinite(value) && value >= 0;
     public bool HasTemperature => TempC is double value && double.IsFinite(value) && value >= 0;
-    public bool IsOverheated => (TempC is double value && double.IsFinite(value) && value >= 80)
-        || (VramTempC is double vram && double.IsFinite(vram) && vram >= 98);
+    public bool IsCoreTempWarning => TempC is double value && double.IsFinite(value) && value is >= 78 and < 85;
+    public bool IsCoreTempCritical => TempC is double value && double.IsFinite(value) && value >= 85;
+    public bool IsVramTempWarning => VramTempC is double vram && double.IsFinite(vram) && vram is >= 94 and < 102;
+    public bool IsVramTempCritical => VramTempC is double vram && double.IsFinite(vram) && vram >= 102;
+    public bool IsOverheated => IsCoreTempCritical || IsVramTempCritical || (TempC is double t && t >= 80) || (VramTempC is double vt && vt >= 98);
+    public bool HasThrottleWarning => !string.IsNullOrWhiteSpace(ThrottleReasons)
+        && (ThrottleReasons.Contains("Термо", StringComparison.OrdinalIgnoreCase)
+            || ThrottleReasons.Contains("питание", StringComparison.OrdinalIgnoreCase)
+            || ThrottleReasons.Contains("Лимит", StringComparison.OrdinalIgnoreCase));
+
+    public string PcieBadgeText => string.IsNullOrWhiteSpace(PcieLink) ? "PCIe —" : PcieLink;
+    public string PStateBadgeText => string.IsNullOrWhiteSpace(PState) ? "P—" : PState;
+    public string LoadBadgeText => CoreUtilizationPercent is double gUtil
+        ? (MemoryUtilizationPercent is double mUtil ? $"Ядро {gUtil:0}% · Память {mUtil:0}%" : $"Ядро {gUtil:0}%")
+        : "Загрузка —";
+    public string EnergyCounterBadgeText => HardwareEnergyKwh is double hw && hw > 0 ? $"NVML {hw:0.00} кВт·ч" : "Счётчик —";
+    public string PowerRangeBadgeText => MinPowerLimitWatts is double min && MaxPowerLimitWatts is double max
+        ? $"{min:0}–{max:0} Вт (норма {(DefaultPowerLimitWatts ?? max):0} Вт)"
+        : "Диапазон PL —";
 
     public string SourceText => (Source switch
     {

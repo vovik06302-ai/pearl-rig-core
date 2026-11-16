@@ -1,17 +1,19 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
 using PearlRigCore.Models;
 
 namespace PearlRigCore.Services;
 
-/// <summary>Starts OneZeroMiner with the configured Pearl pool, manages Windows Task Scheduler auto-start, and requests a graceful Ctrl+C shutdown.</summary>
+/// <summary>Starts OneZeroMiner with the configured Pearl pool, manages Windows Task Scheduler auto-start, and sends native Ctrl+C shutdown with emergency timeout fallback.</summary>
 public sealed class MinerControlService
 {
     private const string TaskName = "PearlRigControl-AutoStart";
     private RigConfig _config;
     private bool _useBackupPool;
+    private int? _trackedMinerPid;
 
     public MinerControlService(RigConfig config) => _config = config;
 
@@ -22,6 +24,15 @@ public sealed class MinerControlService
         get => _useBackupPool;
         set => _useBackupPool = value;
     }
+
+    public static bool RequiresMinerRestartForSettings(RigConfig previous, RigConfig next) =>
+        !string.Equals(previous.WorkerName, next.WorkerName, StringComparison.Ordinal)
+        || !string.Equals(previous.PrimaryPool, next.PrimaryPool, StringComparison.OrdinalIgnoreCase)
+        || !string.Equals(previous.BackupPool, next.BackupPool, StringComparison.OrdinalIgnoreCase)
+        || !string.Equals(previous.CoreClock, next.CoreClock, StringComparison.Ordinal)
+        || !string.Equals(previous.MemoryClock, next.MemoryClock, StringComparison.Ordinal)
+        || !string.Equals(previous.Kernel, next.Kernel, StringComparison.Ordinal)
+        || !string.Equals(previous.Fan, next.Fan, StringComparison.Ordinal);
 
     public static string GetLogFilePath()
     {
@@ -76,11 +87,32 @@ public sealed class MinerControlService
     {
         get
         {
+            if (_trackedMinerPid is int pid)
+            {
+                try
+                {
+                    using var tracked = Process.GetProcessById(pid);
+                    if (!tracked.HasExited && tracked.ProcessName.Equals("onezerominer", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                catch
+                {
+                    _trackedMinerPid = null;
+                }
+            }
+
             foreach (var process in Process.GetProcessesByName("onezerominer"))
             {
                 using (process)
                 {
-                    try { if (!process.HasExited) return true; }
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            _trackedMinerPid = process.Id;
+                            return true;
+                        }
+                    }
                     catch (InvalidOperationException) { }
                 }
             }
@@ -119,37 +151,91 @@ public sealed class MinerControlService
         {
             using var started = Process.Start(startInfo);
             if (started is null) throw new InvalidOperationException("Windows не смогла запустить OneZeroMiner.");
+            _trackedMinerPid = started.Id;
+            AppLogger.Info($"Запущен OneZeroMiner PID {started.Id} (пул: {(_useBackupPool ? _config.BackupPool : _config.PrimaryPool)}).");
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
             throw new OperationCanceledException("Запуск отменён в запросе контроля учётных записей Windows.", ex, cancellationToken);
         }
+
         await Task.Delay(2500, cancellationToken);
         if (!IsRunning)
         {
+            _trackedMinerPid = null;
             var excerpt = ReadLogExcerpt(logPath, 3000);
             throw new InvalidOperationException($"OneZeroMiner завершился при запуске. Лог: {logPath}{(excerpt.Length == 0 ? string.Empty : Environment.NewLine + excerpt)}");
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken = default)
+    public async Task StopAsync(bool forceKillOnTimeout = false, CancellationToken cancellationToken = default)
     {
         var miners = Process.GetProcessesByName("onezerominer");
-        if (miners.Length == 0) return;
+        if (miners.Length == 0)
+        {
+            _trackedMinerPid = null;
+            return;
+        }
 
+        var isElevated = IsCurrentProcessElevated();
         try
         {
             foreach (var miner in miners)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await SendCtrlCAsAdministratorAsync(miner.Id, cancellationToken);
+                if (isElevated)
+                {
+                    if (!TrySendCtrlCDirect(miner.Id))
+                        await SendCtrlCAsAdministratorAsync(miner.Id, cancellationToken);
+                }
+                else
+                {
+                    await SendCtrlCAsAdministratorAsync(miner.Id, cancellationToken);
+                }
+            }
+
+            var deadline = DateTime.UtcNow.AddSeconds(12);
+            while (DateTime.UtcNow < deadline && IsRunning)
+                await Task.Delay(250, cancellationToken);
+
+            if (IsRunning && forceKillOnTimeout)
+            {
+                AppLogger.Warn("OneZeroMiner не завершился после Ctrl+C за 12 с; выполняется принудительное завершение (аварийный режим).");
+                foreach (var miner in Process.GetProcessesByName("onezerominer"))
+                {
+                    using (miner)
+                    {
+                        try
+                        {
+                            if (!miner.HasExited)
+                                miner.Kill(entireProcessTree: true);
+                        }
+                        catch (Exception ex)
+                        {
+                            AppLogger.Warn($"Не удалось завершить PID {miner.Id}: {ex.Message}");
+                        }
+                    }
+                }
+                await Task.Delay(500, cancellationToken);
             }
         }
-        finally { foreach (var miner in miners) miner.Dispose(); }
-        var deadline = DateTime.UtcNow.AddSeconds(14);
-        while (DateTime.UtcNow < deadline && IsRunning)
-            await Task.Delay(250, cancellationToken);
-        if (IsRunning) throw new InvalidOperationException("OneZeroMiner не завершился после штатного Ctrl+C. Принудительно завершать процесс не стал.");
+        finally
+        {
+            foreach (var miner in miners) miner.Dispose();
+        }
+
+        if (IsRunning)
+            throw new InvalidOperationException("OneZeroMiner не завершился после штатного Ctrl+C.");
+
+        _trackedMinerPid = null;
+        AppLogger.Info("OneZeroMiner остановлен.");
+    }
+
+    public async Task RestartAsync(string walletAddress, int gpuCount = 2, CancellationToken cancellationToken = default)
+    {
+        await StopAsync(forceKillOnTimeout: true, cancellationToken);
+        await Task.Delay(1200, cancellationToken);
+        await StartAsync(walletAddress, gpuCount, cancellationToken);
     }
 
     public async Task SetAutoStartAsync(bool enabled, CancellationToken cancellationToken = default)
@@ -162,13 +248,33 @@ public sealed class MinerControlService
         await RunElevatedPowerShellAsync(taskArgs, cancellationToken);
     }
 
-    private static bool IsCurrentProcessElevated()
+    public static bool IsCurrentProcessElevated()
     {
         try
         {
             using var identity = WindowsIdentity.GetCurrent();
             var principal = new WindowsPrincipal(identity);
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TrySendCtrlCDirect(int processId)
+    {
+        try
+        {
+            _ = NativeConsole.FreeConsole();
+            if (!NativeConsole.AttachConsole((uint)processId))
+                return false;
+
+            _ = NativeConsole.SetConsoleCtrlHandler(IntPtr.Zero, true);
+            var sent = NativeConsole.GenerateConsoleCtrlEvent(0, 0);
+            _ = NativeConsole.FreeConsole();
+            _ = NativeConsole.SetConsoleCtrlHandler(IntPtr.Zero, false);
+            return sent;
         }
         catch
         {
@@ -229,7 +335,7 @@ public sealed class MinerControlService
         }
     }
 
-    private static string BuildArguments(RigConfig rig, string logPath, bool useBackupPool, int gpuCount)
+    public static string BuildArguments(RigConfig rig, string logPath, bool useBackupPool, int gpuCount)
     {
         static string Arg(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
         var activePool = useBackupPool && !string.IsNullOrWhiteSpace(rig.BackupPool)
@@ -237,7 +343,6 @@ public sealed class MinerControlService
             : rig.PrimaryPool.Trim();
 
         // NOTE: In OneZeroMiner v1.8.3, -o2 is for dual-mining coin #2 (--algo2), NOT a failover pool for coin #1.
-        // Passing -o2 without -a2 causes onezerominer.exe to exit immediately on startup.
         var arguments = new StringBuilder($"-a pearl -w {Arg(rig.WalletAddress)} -o {Arg(activePool)} --worker {Arg(rig.WorkerName)} --api-port {rig.ApiPort} --log-file {Arg(logPath)}");
         AddOverride(arguments, "--cclk", rig.CoreClock, gpuCount, Arg);
         AddOverride(arguments, "--mclk", rig.MemoryClock, gpuCount, Arg);
@@ -262,7 +367,7 @@ public sealed class MinerControlService
         arguments.Append(' ').Append(option).Append(' ').Append(quote(normalized));
     }
 
-    private static string? ResolveMinerPath()
+    public static string? ResolveMinerPath()
     {
         var exeDir = Path.GetDirectoryName(Environment.ProcessPath);
         var baseDir = AppContext.BaseDirectory;
@@ -303,4 +408,23 @@ public sealed class MinerControlService
     }
 
     private static string EscapePowerShell(string value) => value.Replace("'", "''", StringComparison.Ordinal);
+
+    private static class NativeConsole
+    {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool FreeConsole();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool AttachConsole(uint processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetConsoleCtrlHandler(IntPtr handler, [MarshalAs(UnmanagedType.Bool)] bool add);
+    }
 }

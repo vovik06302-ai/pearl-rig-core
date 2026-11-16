@@ -1,9 +1,10 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 
 namespace PearlRigCore.Controls;
 
-/// <summary>Hardware-accelerated WPF sparkline chart rendered from real telemetry ring buffers.</summary>
+/// <summary>Hardware-accelerated WPF sparkline chart rendered from real telemetry ring buffers with optional Min/Max scale labels.</summary>
 public sealed class TelemetrySparkline : FrameworkElement
 {
     public static readonly DependencyProperty ValuesProperty = DependencyProperty.Register(
@@ -13,6 +14,14 @@ public sealed class TelemetrySparkline : FrameworkElement
     public static readonly DependencyProperty StrokeColorProperty = DependencyProperty.Register(
         nameof(StrokeColor), typeof(Color), typeof(TelemetrySparkline),
         new FrameworkPropertyMetadata(Color.FromRgb(0, 229, 192), FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty ShowScaleLabelsProperty = DependencyProperty.Register(
+        nameof(ShowScaleLabels), typeof(bool), typeof(TelemetrySparkline),
+        new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty UnitSuffixProperty = DependencyProperty.Register(
+        nameof(UnitSuffix), typeof(string), typeof(TelemetrySparkline),
+        new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.AffectsRender));
 
     public IReadOnlyList<double>? Values
     {
@@ -24,6 +33,18 @@ public sealed class TelemetrySparkline : FrameworkElement
     {
         get => (Color)GetValue(StrokeColorProperty);
         set => SetValue(StrokeColorProperty, value);
+    }
+
+    public bool ShowScaleLabels
+    {
+        get => (bool)GetValue(ShowScaleLabelsProperty);
+        set => SetValue(ShowScaleLabelsProperty, value);
+    }
+
+    public string UnitSuffix
+    {
+        get => (string)GetValue(UnitSuffixProperty);
+        set => SetValue(UnitSuffixProperty, value);
     }
 
     protected override Size MeasureOverride(Size availableSize) => new(
@@ -58,6 +79,8 @@ public sealed class TelemetrySparkline : FrameworkElement
         }
         if (min > max) return;
 
+        var rawMin = min;
+        var rawMax = max;
         var span = max - min;
         if (span < 0.01)
         {
@@ -67,7 +90,7 @@ public sealed class TelemetrySparkline : FrameworkElement
         }
 
         var padX = 4d;
-        var padY = 4d;
+        var padY = ShowScaleLabels && height >= 36 ? 11d : 4d;
         var plotWidth = Math.Max(4, width - padX * 2);
         var plotHeight = Math.Max(4, height - padY * 2);
 
@@ -125,5 +148,33 @@ public sealed class TelemetrySparkline : FrameworkElement
         drawingContext.DrawGeometry(fillBrush, null, fillGeometry);
         drawingContext.DrawGeometry(null, pen, lineGeometry);
         drawingContext.DrawEllipse(strokeBrush, null, last, 2.4, 2.4);
+
+        if (ShowScaleLabels && height >= 36)
+        {
+            var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+            var labelBrush = new SolidColorBrush(Color.FromArgb(195, 139, 152, 170));
+            labelBrush.Freeze();
+            var suffix = string.IsNullOrWhiteSpace(UnitSuffix) ? string.Empty : $" {UnitSuffix}";
+
+            var maxText = new FormattedText(
+                $"{rawMax:0.##}{suffix}",
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface("Consolas"),
+                8.5,
+                labelBrush,
+                dpi);
+            drawingContext.DrawText(maxText, new Point(4, 1.5));
+
+            var minText = new FormattedText(
+                $"{rawMin:0.##}{suffix}",
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface("Consolas"),
+                8.5,
+                labelBrush,
+                dpi);
+            drawingContext.DrawText(minText, new Point(4, Math.Max(11, height - 11)));
+        }
     }
 }

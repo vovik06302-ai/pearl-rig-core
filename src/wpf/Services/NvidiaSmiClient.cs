@@ -89,6 +89,9 @@ public sealed class NvidiaSmiClient
     public bool TryApplySmartFansDirect(IReadOnlyList<(int GpuId, int TargetFanPercent)> targets) =>
         NvmlNativeReader.TrySetFanSpeeds(targets);
 
+    public bool TryResetFansToAutoDirect(IEnumerable<int> gpuIds) =>
+        NvmlNativeReader.TryResetFanSpeedsToDefault(gpuIds);
+
     /// <summary>Sets per-GPU NVIDIA power caps (first via direct NVML, otherwise via elevated NVML + nvidia-smi) and verifies the values returned by the driver.</summary>
     public async Task<string> ApplyPowerLimitsAsync(string draft, CancellationToken cancellationToken)
     {
@@ -534,6 +537,9 @@ public sealed class NvidiaSmiClient
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceSetFanSpeed_v2", ExactSpelling = true)]
         private static extern int nvmlDeviceSetFanSpeed_v2(IntPtr device, uint fan, uint speed);
 
+        [DllImport("nvml.dll", EntryPoint = "nvmlDeviceSetDefaultFanSpeed_v2", ExactSpelling = true)]
+        private static extern int nvmlDeviceSetDefaultFanSpeed_v2(IntPtr device, uint fan);
+
         [DllImport("nvml.dll", EntryPoint = "nvmlDeviceGetClockInfo", ExactSpelling = true)]
         private static extern int nvmlDeviceGetClockInfo(IntPtr device, uint type, out uint clockMhz);
 
@@ -623,6 +629,33 @@ public sealed class NvidiaSmiClient
             }
         }
 
+        public static bool TryResetFanSpeedsToDefault(IEnumerable<int> gpuIds)
+        {
+            try
+            {
+                lock (Sync)
+                {
+                    if (!EnsureInitialized()) return false;
+                    var anyReset = false;
+                    foreach (var gpuId in gpuIds.Distinct())
+                    {
+                        if (gpuId < 0 || nvmlDeviceGetHandleByIndex_v2((uint)gpuId, out var handle) != 0)
+                            continue;
+                        if (nvmlDeviceSetDefaultFanSpeed_v2(handle, 0) == 0)
+                        {
+                            _ = nvmlDeviceSetDefaultFanSpeed_v2(handle, 1);
+                            anyReset = true;
+                        }
+                    }
+                    return anyReset;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static bool TryReadAll(out IReadOnlyList<NvidiaGpuReading> gpus, out string message)
         {
             gpus = [];
@@ -679,7 +712,7 @@ public sealed class NvidiaSmiClient
                             if (util.memory <= 100) memUtil = util.memory;
                         }
                         double? hwEnergyKwh = nvmlDeviceGetTotalEnergyConsumption(handle, out var totalMj) == 0 && totalMj > 0
-                            ? Math.Round(totalMj / 3_600_000_000d, 3)
+                            ? Math.Round(totalMj / 3_600_000_000d, 6)
                             : null;
                         string? throttle = nvmlDeviceGetCurrentClocksThrottleReasons(handle, out var mask) == 0
                             ? FormatThrottleMask(mask)
