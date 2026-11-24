@@ -5,7 +5,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:controls="clr-namespace:PearlRigCore.Controls"
         Title="Pearl Rig Control v3.9.0" Height="980" Width="1380" MinHeight="760" MinWidth="1100"
-        WindowStartupLocation="CenterScreen" Background="{StaticResource WindowBackground}"
+        WindowStartupLocation="CenterScreen" WindowState="Minimized" Background="{StaticResource WindowBackground}"
         Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI"
         Loaded="Window_Loaded" StateChanged="Window_StateChanged" Closing="Window_Closing" Closed="Window_Closed">
     <shell:WindowChrome.WindowChrome>
