@@ -140,7 +140,7 @@ public sealed class MinerControlService
             FileName = minerPath,
             WorkingDirectory = Path.GetDirectoryName(minerPath)!,
             UseShellExecute = true,
-            WindowStyle = ProcessWindowStyle.Normal,
+            WindowStyle = ProcessWindowStyle.Hidden,
             Arguments = arguments
         };
         if (!isElevated)
