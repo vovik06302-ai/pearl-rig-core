@@ -4,7 +4,7 @@
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:controls="clr-namespace:PearlRigCore.Controls"
-        Title="Pearl Rig Control v3.9.0" Height="980" Width="1380" MinHeight="760" MinWidth="1100"
+        Title="Pearl Rig Control v3.9.2" Height="980" Width="1380" MinHeight="760" MinWidth="1100"
         WindowStartupLocation="CenterScreen" WindowState="Minimized" Background="{StaticResource WindowBackground}"
         Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI"
         Loaded="Window_Loaded" StateChanged="Window_StateChanged" Closing="Window_Closing" Closed="Window_Closed">
@@ -130,7 +130,7 @@
                         <Ellipse Width="8" Height="8" Fill="{StaticResource AccentBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
                         <TextBlock Text="PEARL RIG CONTROL" FontSize="11.5" FontWeight="Bold" Foreground="#DCE6F2" VerticalAlignment="Center" />
                         <Border Background="#112E2B" BorderBrush="#1D5C53" BorderThickness="1" CornerRadius="5" Padding="6,1.5" Margin="8,0,10,0" VerticalAlignment="Center">
-                            <TextBlock Text="v3.9.0" FontSize="9.5" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                            <TextBlock Text="v3.9.2" FontSize="9.5" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
                         </Border>
                         <TextBlock Text="{Binding ComputerSummary}" FontSize="10.5" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                     </StackPanel>

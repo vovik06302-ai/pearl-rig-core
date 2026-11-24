@@ -107,6 +107,13 @@ public partial class MainWindow : Window
             });
         _trayService.Initialize();
         var autoMineArg = Environment.GetCommandLineArgs().Any(arg => string.Equals(arg, "--auto-mine", StringComparison.OrdinalIgnoreCase));
+        if (autoMineArg)
+        {
+            // Scheduled startup: keep the dashboard out of the taskbar and avoid a visible window flash.
+            // The tray icon remains available for status, restore, stop, and exit controls.
+            ShowInTaskbar = false;
+            Hide();
+        }
         _viewModel.Start(autoMineArg);
     }
 
